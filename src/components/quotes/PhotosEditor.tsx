@@ -21,7 +21,7 @@ export function PhotosEditor({
 }: {
   quoteItemId: string;
   initialPhotos: Photo[];
-  gallery: { path: string; url: string }[];
+  gallery: { path: string; url: string; mediaTarget: string | null }[];
 }) {
   const [photos, setPhotos] = useState(initialPhotos);
   const [showGallery, setShowGallery] = useState(false);
@@ -67,10 +67,10 @@ export function PhotosEditor({
     e.target.value = "";
   }
 
-  function addFromGallery(path: string, url: string) {
-    setPhotos((prev) => [...prev, { id: crypto.randomUUID(), url }]);
+  function addFromGallery(entry: { path: string; url: string; mediaTarget: string | null }) {
+    setPhotos((prev) => [...prev, { id: crypto.randomUUID(), url: entry.url }]);
     startTransition(() => {
-      addQuoteItemPhotoFromLibrary(quoteItemId, path);
+      addQuoteItemPhotoFromLibrary(quoteItemId, entry.path, entry.mediaTarget);
     });
     setShowGallery(false);
   }
@@ -141,7 +141,7 @@ export function PhotosEditor({
             <button
               key={g.path}
               type="button"
-              onClick={() => addFromGallery(g.path, g.url)}
+              onClick={() => addFromGallery(g)}
               className="h-16 w-24 overflow-hidden rounded-md border border-slate-200 hover:ring-2 hover:ring-brand-400"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}

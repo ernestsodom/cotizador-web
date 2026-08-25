@@ -8,12 +8,45 @@ antes de generar el documento definitivo.
 Flujo: **Cargar documento → Analizar → Seleccionar ítems → Fotografías →
 Datos → Borrador → Aprobar → Generar**.
 
+Las fotografías de cada ítem vienen por defecto del documento cargado, y se
+pueden quitar, reemplazar, reordenar o complementar con fotos nuevas.
+
 ## Stack
 
 - [Next.js](https://nextjs.org) 14 (App Router, TypeScript, Server Actions) — desplegado en [Vercel](https://vercel.com)
 - [Supabase](https://supabase.com) — base de datos Postgres + Storage (documentos, imágenes, logos, firmas, cotizaciones generadas)
 - [`docx`](https://www.npmjs.com/package/docx) para generar el documento final
-- Parser propio de `.docx` (JSZip + fast-xml-parser), sin dependencias nativas
+- Motor propio de lectura/edición de `.docx` (JSZip + cirugía sobre el XML de OOXML), sin dependencias nativas
+
+## Formatos de cotización
+
+1. **Formato original (`reutility_replica_v1`)** — el documento final es el
+   *mismo archivo* que se cargó: se edita en su sitio y solo se reemplazan
+   los datos. Conserva exactamente tipografía, portada, cabecera con los
+   logos de Proexsi y Besttech, pie de página y diseño. Es el formato por
+   defecto.
+2. **Formato moderno (`carta_uf_v1`)** — documento nuevo, con tabla de ítems
+   limpia, totales calculados y las fotos bajo cada ítem.
+
+El formato se elige al crear la cotización y se puede cambiar después en el
+paso "Datos".
+
+### Cómo funciona la réplica exacta
+
+`src/lib/docx-template/` implementa cirugía sobre el XML de OOXML: indexa los
+elementos del documento conservando sus posiciones en el archivo original y
+aplica reemplazos puntuales. Nunca se re-serializa el documento completo, así
+que todo lo que no se toca sale **byte a byte idéntico** (hay un test de
+round-trip que lo verifica).
+
+Al analizar un documento, el parser guarda *anclas*: el índice de bloque de
+cada dato editable (título, fecha, destinatario, tabla de precios, firma) y
+la parte de media de cada fotografía. El renderer usa esas anclas para
+escribir los valores nuevos en el mismo sitio.
+
+Esto es lo que hace que **cualquier documento nuevo funcione igual**: al
+subir la cotización de otro software, esa misma cotización se convierte en la
+plantilla de su formato original.
 
 ## Arquitectura (pensada para crecer)
 
@@ -22,8 +55,13 @@ Datos → Borrador → Aprobar → Generar**.
   soportar un nuevo tipo de documento, se agrega un archivo nuevo y se
   registra en `registry.ts`, sin tocar el resto de la app.
 - `src/lib/quote-renderers/` — un **renderer por formato de cotización de
-  salida**. Hoy solo existe `carta_uf_v1`. Nuevos formatos de cotización se
-  agregan igual, registrándose en `registry.ts`.
+  salida**, registrado en su `registry.ts`.
+- `src/lib/docx-template/` — el motor de edición de .docx que usan tanto el
+  parser (para leer) como el renderer de réplica (para escribir), lo que
+  garantiza que los índices de ambos siempre coincidan.
+- `src/lib/quotes/render.ts` — arma el documento. Lo usan tanto la descarga
+  del borrador como la generación definitiva, así que lo que se aprueba es
+  exactamente lo que se descarga.
 - `document_types` / `quote_formats` (tablas en Supabase) son el catálogo que
   conecta documentos y cotizaciones con la implementación correcta.
 - `src/lib/actions/` — Server Actions (mutaciones): documentos, cotizaciones,

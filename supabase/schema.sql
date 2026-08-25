@@ -37,6 +37,9 @@ create table source_document_images (
   kind text not null default 'photo' check (kind in ('logo_candidate','photo')),
   section_label text,
   order_index int not null default 0,
+  -- template anchors: which media part of the source .docx this came from
+  media_target text,
+  block_index int,
   created_at timestamptz not null default now()
 );
 
@@ -49,6 +52,10 @@ create table source_document_items (
   unit_price numeric not null default 0,
   currency text not null default 'UF',
   order_index int not null default 0,
+  -- template anchors: where this item lives inside the source .docx
+  table_row_index int,
+  section_start_block int,
+  section_end_block int,
   created_at timestamptz not null default now()
 );
 
@@ -80,6 +87,9 @@ create table quotes (
   quote_format_id uuid not null references quote_formats(id),
   status text not null default 'draft' check (status in ('draft','approved','generated')),
   title text,
+  subtitle text,
+  cover_image_path text,
+  remove_excluded_sections boolean not null default true,
   client_name text,
   recipient_name text,
   recipient_position text,
@@ -116,6 +126,10 @@ create table quote_item_photos (
   id uuid primary key default gen_random_uuid(),
   quote_item_id uuid not null references quote_items(id) on delete cascade,
   storage_path text not null,
+  bucket text not null default 'quote-photos',
+  -- set when the photo is one the source document already carried, so the
+  -- replica renderer can leave it byte-identical
+  source_media_target text,
   order_index int not null default 0,
   created_at timestamptz not null default now()
 );
@@ -124,7 +138,8 @@ insert into document_types (key, name) values
   ('carta_cotizacion_v1', 'Carta de Cotización (Propuesta Comercial)');
 
 insert into quote_formats (key, name) values
-  ('carta_uf_v1', 'Carta formal con tabla de ítems');
+  ('reutility_replica_v1', 'Réplica exacta del documento original'),
+  ('carta_uf_v1', 'Carta moderna con tabla de ítems');
 
 create or replace function set_updated_at() returns trigger
 language plpgsql

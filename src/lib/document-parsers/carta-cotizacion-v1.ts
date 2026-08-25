@@ -1,314 +1,345 @@
+import { DocxEditor } from "@/lib/docx-template/docx-editor";
+import { findAll } from "@/lib/docx-template/xml-tree";
 import {
-  loadDocx,
   parseChileanNumber,
   parseSpanishLongDate,
-  type DocBlock,
-} from "./docx-xml-utils";
-import type { ParsedDocument, ParsedImage, ParsedItem, ParsedDocumentMeta } from "./types";
+  contentWords,
+} from "./text-utils";
+import type {
+  ParsedDocument,
+  ParsedImage,
+  ParsedItem,
+  ParsedDocumentMeta,
+  ParsedAnchors,
+} from "./types";
 
 /**
  * Parser for "carta_cotizacion_v1": a formal commercial-proposal letter
- * (Word) addressed to a client, with a body of numbered service sections
- * (each with a short description and optional screenshots/photos),
- * followed by a pricing table ("COTIZACIÓN"), terms ("PLAZOS"), general
- * conditions ("CONSIDERACIONES") and a signature block.
+ * (Word) with a cover page, numbered service sections (each with a short
+ * description and optional screenshots), a pricing table ("COTIZACIÓN"),
+ * terms, general conditions and a signature block.
  *
- * The parser is heuristic, not a strict template match — headings are
- * matched by keyword rather than exact position — so reasonably similar
- * letters should still parse usefully even if wording shifts a bit.
+ * Besides extracting the data, it records *anchors* — body-block indices
+ * for every editable piece — so the replica renderer can write new values
+ * back into this very document without rebuilding it. Headings are matched
+ * by keyword rather than fixed position, so similar letters still parse.
  */
 
-const STOPWORDS = new Set([
-  "de", "la", "el", "los", "las", "y", "en", "para", "con", "del", "un", "una",
-  "a", "que", "por", "su", "al", "e", "o", "u", "punto", "puntos", "modulo",
-  "módulo", "modulos", "módulos",
-]);
+const EXT_CONTENT_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  webp: "image/webp",
+  emf: "image/x-emf",
+  wmf: "image/x-wmf",
+};
 
-function normalizeWords(text: string): string[] {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "") // strip accents
-    .replace(/[^a-z0-9\s.]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
-}
-
-interface SectionHeading {
-  number: string; // e.g. "1.1"
+interface Section {
+  number: string;
   title: string;
-  blockIndex: number;
-}
-
-function findSectionHeadings(blocks: DocBlock[]): SectionHeading[] {
-  const headings: SectionHeading[] = [];
-  blocks.forEach((b, i) => {
-    if (b.type !== "paragraph") return;
-    const m = b.text.match(/^(\d+\.\d+)\.\s*(.{3,120})/);
-    if (m) {
-      headings.push({ number: m[1], title: m[2].trim(), blockIndex: i });
-    }
-  });
-  return headings;
+  block: number;
+  endBlock: number;
 }
 
 export async function parseCartaCotizacionV1(
   fileBuffer: Buffer
 ): Promise<ParsedDocument> {
-  const { blocks, media } = await loadDocx(fileBuffer);
+  const ed = await DocxEditor.load(fileBuffer);
+  const blocks = ed.blocks();
+  const rels = ed.relationships();
+  const zip = await import("jszip").then((m) => m.default.loadAsync(fileBuffer));
 
-  // ---- images: collect every embedded image once, in document order ----
-  const images: ParsedImage[] = [];
-  const seenRIds = new Set<string>();
-  const rIdToImageKey = new Map<string, string>();
+  const isP = (i: number) => blocks[i]?.name === "w:p";
+  const text = (i: number) => (blocks[i] ? ed.text(blocks[i]).trim() : "");
 
-  const recipientBlockIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /^se(ñ|n)or(a)?$/i.test(b.text.trim())
+  // ---- locate the structural landmarks first ----
+  const recipientBlock = blocks.findIndex(
+    (b, i) => isP(i) && /^se(ñ|n)or(a|es)?\.?$/i.test(ed.text(b).trim())
   );
+  const tableBlock = blocks.findIndex((b) => b.name === "w:tbl");
+  const quoteHeadingBlock = blocks.findIndex(
+    (b, i) => isP(i) && /^cotizaci[óo]n$/i.test(ed.text(b).trim())
+  );
+  const sectionsEndBlock =
+    quoteHeadingBlock !== -1 ? quoteHeadingBlock : tableBlock !== -1 ? tableBlock : blocks.length;
 
-  blocks.forEach((block, blockIndex) => {
-    const imageRIds =
-      block.type === "paragraph"
-        ? block.imageRIds
-        : block.rows.flatMap((row) => row.flatMap((cell) => cell.imageRIds));
-    for (const rId of imageRIds) {
-      if (seenRIds.has(rId)) continue;
-      const media_ = media.get(rId);
-      if (!media_) continue;
-      seenRIds.add(rId);
-      const key = `img_${images.length + 1}`;
-      rIdToImageKey.set(rId, key);
-      images.push({
-        key,
-        data: media_.data,
-        contentType: media_.contentType,
-        isHeaderCandidate:
-          recipientBlockIndex === -1 ? false : blockIndex < recipientBlockIndex,
-      });
-    }
+  // ---- section headings ("1.1. ADMINISTRACIÓN...") ----
+  const sections: Section[] = [];
+  blocks.forEach((b, i) => {
+    if (!isP(i)) return;
+    const m = ed.text(b).trim().match(/^(\d+\.\d+)\.?\s*(.{3,140})$/);
+    if (m) sections.push({ number: m[1], title: m[2].trim(), block: i, endBlock: i });
+  });
+  sections.forEach((s, idx) => {
+    s.endBlock = (sections[idx + 1]?.block ?? sectionsEndBlock) - 1;
   });
 
-  // ---- section headings (for tagging images + matching items to descriptions) ----
-  const headings = findSectionHeadings(blocks);
-
-  function sectionForBlockIndex(blockIndex: number): SectionHeading | undefined {
-    let current: SectionHeading | undefined;
-    for (const h of headings) {
-      if (h.blockIndex <= blockIndex) current = h;
+  function sectionAt(blockIndex: number): Section | undefined {
+    let current: Section | undefined;
+    for (const s of sections) {
+      if (s.block <= blockIndex) current = s;
       else break;
     }
     return current;
   }
 
-  // tag each non-header image with the section it falls under, and collect
-  // per-section image keys for later item matching
+  // ---- images, in document order, with their template anchors ----
+  const images: ParsedImage[] = [];
   const imagesBySection = new Map<string, string[]>();
-  blocks.forEach((block, blockIndex) => {
-    if (block.type !== "paragraph") return;
-    if (block.imageRIds.length === 0) return;
-    const section = sectionForBlockIndex(blockIndex);
-    if (!section) return;
-    for (const rId of block.imageRIds) {
-      const key = rIdToImageKey.get(rId);
-      if (!key) continue;
-      const img = images.find((i) => i.key === key);
-      if (img && !img.isHeaderCandidate) {
-        img.sectionLabel = `${section.number} ${section.title}`;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const drawings = ed.drawingsIn(blocks[i]);
+    if (drawings.length === 0) continue;
+    const seenHere = new Set<string>();
+
+    for (const drawing of drawings) {
+      const blip = findAll(drawing, "a:blip")[0];
+      if (!blip) continue;
+      const raw = ed.rawSlice(blip.start, blip.selfClosing ? blip.end : blip.innerStart);
+      const rid = raw.match(/r:embed="([^"]+)"/)?.[1];
+      if (!rid) continue;
+      const target = rels[rid];
+      if (!target || !target.startsWith("media/")) continue;
+      if (seenHere.has(target)) continue; // the cover art is drawn twice
+      seenHere.add(target);
+
+      const file = zip.file(`word/${target}`);
+      if (!file) continue;
+      const data = await file.async("nodebuffer");
+      const ext = target.split(".").pop()?.toLowerCase() ?? "";
+
+      const isHeaderCandidate = recipientBlock !== -1 && i < recipientBlock;
+      const section = isHeaderCandidate ? undefined : sectionAt(i);
+      const key = `img_${images.length + 1}`;
+
+      images.push({
+        key,
+        data,
+        contentType: EXT_CONTENT_TYPES[ext] ?? "application/octet-stream",
+        isHeaderCandidate,
+        sectionLabel: section ? `${section.number} ${section.title}` : undefined,
+        mediaTarget: target,
+        blockIndex: i,
+      });
+
+      if (section) {
         const list = imagesBySection.get(section.number) ?? [];
         list.push(key);
         imagesBySection.set(section.number, list);
       }
     }
-  });
+  }
 
-  // section description text: bullet lines following each heading, up to
-  // the next heading (used as the default item description)
+  // ---- per-section descriptive text (default item description) ----
   const sectionDescriptions = new Map<string, string>();
-  headings.forEach((h, idx) => {
-    const nextIndex = headings[idx + 1]?.blockIndex ?? blocks.length;
+  for (const s of sections) {
     const lines: string[] = [];
-    for (let i = h.blockIndex + 1; i < nextIndex; i++) {
-      const b = blocks[i];
-      if (b.type === "paragraph" && b.text) lines.push(b.text);
+    for (let i = s.block + 1; i <= s.endBlock && i < blocks.length; i++) {
+      if (!isP(i)) continue;
+      const t = ed.text(blocks[i]).trim();
+      if (t) lines.push(t);
     }
-    sectionDescriptions.set(h.number, lines.join("\n"));
-  });
-
-  // ---- pricing table: first table under a heading mentioning "cotiza" ----
-  let quoteHeadingIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /cotiza/i.test(b.text) && b.text.length < 60
-  );
-  let tableBlockIndex = -1;
-  for (let i = Math.max(quoteHeadingIndex, 0); i < blocks.length; i++) {
-    if (blocks[i].type === "table") {
-      tableBlockIndex = i;
-      break;
-    }
-  }
-  // fallback: last table in the document (many letters only have the pricing table)
-  if (tableBlockIndex === -1) {
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i].type === "table") {
-        tableBlockIndex = i;
-        break;
-      }
-    }
+    sectionDescriptions.set(s.number, lines.join("\n"));
   }
 
+  /**
+   * Resolves which descriptive sections an item refers to. Explicit
+   * references in the item name win, but the source letters sometimes cite
+   * the wrong number, so when the cited section has no images we fall back
+   * to the section whose heading best matches the item name.
+   */
+  function resolveSections(itemName: string): Section[] {
+    const refs = Array.from(itemName.matchAll(/\d+\.\d+/g)).map((m) => m[0]);
+    const byRef = refs
+      .map((r) => sections.find((s) => s.number === r))
+      .filter((s): s is Section => !!s);
+
+    const refsHaveImages = byRef.some((s) => (imagesBySection.get(s.number) ?? []).length > 0);
+    if (byRef.length > 0 && refsHaveImages) return byRef;
+
+    const nameWords = new Set(contentWords(itemName));
+    let best: { section: Section; score: number } | null = null;
+    for (const s of sections) {
+      const titleWords = contentWords(s.title);
+      if (titleWords.length === 0) continue;
+      let overlap = 0;
+      for (const w of titleWords) if (nameWords.has(w)) overlap++;
+      if (overlap >= 2 && (!best || overlap > best.score)) best = { section: s, score: overlap };
+    }
+    if (best) return [best.section];
+    return byRef;
+  }
+
+  // ---- pricing table ----
   const items: ParsedItem[] = [];
-  if (tableBlockIndex !== -1) {
-    const table = blocks[tableBlockIndex];
-    if (table.type === "table") {
-      const headerRow = table.rows[0];
-      const headerText = headerRow?.map((c) => c.text).join(" ") ?? "";
-      const currency = /uf\b/i.test(headerText)
-        ? "UF"
-        : /\$|clp|pesos/i.test(headerText)
-        ? "CLP"
-        : "CLP";
+  if (tableBlock !== -1) {
+    const tbl = blocks[tableBlock];
+    const rows = ed.rows(tbl);
+    const headerText = rows[0] ? ed.cells(rows[0]).map((c) => ed.text(c)).join(" ") : "";
+    const currency = /uf\b/i.test(headerText) ? "UF" : "CLP";
 
-      for (const row of table.rows.slice(1)) {
-        if (row.length < 2) continue;
-        const name = row[0]?.text?.trim();
-        const priceText = row[row.length - 1]?.text?.trim();
-        if (!name || !priceText) continue;
-        const unitPrice = parseChileanNumber(priceText);
+    rows.forEach((row, rowIndex) => {
+      if (rowIndex === 0) return; // header
+      const cells = ed.cells(row);
+      if (cells.length < 2) return;
+      const name = ed.text(cells[0]).trim();
+      const priceText = ed.text(cells[cells.length - 1]).trim();
+      if (!name || !priceText) return;
 
-        // 1) explicit section refs mentioned in the item name, e.g. "(1.2. +1.3.)"
-        const refs = Array.from(name.matchAll(/\d+\.\d+/g)).map((m) => m[0]);
-        let matchedSections = refs;
-
-        // 2) fallback: word-overlap against section headings
-        if (matchedSections.length === 0) {
-          const nameWords = new Set(normalizeWords(name));
-          let best: { number: string; score: number } | null = null;
-          for (const h of headings) {
-            const titleWords = new Set(normalizeWords(h.title));
-            let overlap = 0;
-            for (const w of nameWords) if (titleWords.has(w)) overlap++;
-            if (overlap >= 2 && (!best || overlap > best.score)) {
-              best = { number: h.number, score: overlap };
-            }
-          }
-          if (best) matchedSections = [best.number];
-        }
-
-        const suggested = new Set<string>();
-        const descriptionParts: string[] = [];
-        for (const ref of matchedSections) {
-          for (const key of imagesBySection.get(ref) ?? []) suggested.add(key);
-          const d = sectionDescriptions.get(ref);
-          if (d) descriptionParts.push(d);
-        }
-
-        items.push({
-          name,
-          description: descriptionParts.join("\n\n") || undefined,
-          quantity: 1,
-          unitPrice,
-          currency,
-          suggestedImageKeys: Array.from(suggested),
-        });
+      const resolved = resolveSections(name);
+      const suggested: string[] = [];
+      const descriptions: string[] = [];
+      for (const s of resolved) {
+        for (const k of imagesBySection.get(s.number) ?? []) suggested.push(k);
+        const d = sectionDescriptions.get(s.number);
+        if (d) descriptions.push(d);
       }
-    }
+
+      items.push({
+        name,
+        description: descriptions.join("\n\n") || undefined,
+        quantity: 1,
+        unitPrice: parseChileanNumber(priceText),
+        currency,
+        suggestedImageKeys: suggested,
+        tableRowIndex: rowIndex,
+        sectionStartBlock: resolved.length ? Math.min(...resolved.map((s) => s.block)) : undefined,
+        sectionEndBlock: resolved.length ? Math.max(...resolved.map((s) => s.endBlock)) : undefined,
+      });
+    });
   }
 
-  // ---- letter metadata ----
+  // ---- letter metadata + anchors ----
   const meta: ParsedDocumentMeta = {};
+  const anchors: ParsedAnchors = {};
 
-  const dateBlock = blocks.find(
-    (b) => b.type === "paragraph" && /\d{4}/.test(b.text) && /de\s+\d{4}/i.test(b.text)
+  const coverImageBlocks = images
+    .filter((i) => i.isHeaderCandidate)
+    .map((i) => i.blockIndex);
+  if (coverImageBlocks.length > 0) anchors.coverLogoBlock = coverImageBlocks[0];
+  if (coverImageBlocks.length > 1) anchors.coverImageBlock = coverImageBlocks[1];
+
+  const dateBlock = blocks.findIndex(
+    (b, i) => isP(i) && /\d{1,2}\s+de\s+[A-Za-záéíóúñ]+\s+de\s+\d{4}/i.test(ed.text(b))
   );
-  if (dateBlock && dateBlock.type === "paragraph") {
-    const { city, iso } = parseSpanishLongDate(dateBlock.text);
+  if (dateBlock !== -1) {
+    anchors.dateBlock = dateBlock;
+    const { city, iso } = parseSpanishLongDate(text(dateBlock));
     meta.letterCity = city;
     meta.letterDateIso = iso;
   }
 
-  if (recipientBlockIndex !== -1) {
-    const nameBlock = blocks[recipientBlockIndex + 1];
-    const institutionBlock = blocks[recipientBlockIndex + 2];
-    if (nameBlock?.type === "paragraph") {
-      const [first, ...rest] = nameBlock.text.split("\n").map((s) => s.trim()).filter(Boolean);
-      meta.recipientName = first;
-      if (rest.length) meta.recipientPosition = rest.join(" ");
+  // title/subtitle: the last two non-empty paragraphs before the date line
+  if (dateBlock > 0) {
+    const before: number[] = [];
+    for (let i = dateBlock - 1; i >= 0 && before.length < 2; i--) {
+      if (isP(i) && text(i) && ed.drawingsIn(blocks[i]).length === 0) before.push(i);
     }
-    if (institutionBlock?.type === "paragraph") {
-      meta.recipientInstitution = institutionBlock.text.trim();
-      meta.clientNameGuess = institutionBlock.text.trim();
+    if (before[1] !== undefined) {
+      anchors.titleBlock = before[1];
+      meta.title = text(before[1]);
+    }
+    if (before[0] !== undefined) {
+      anchors.subtitleBlock = before[0];
+      meta.subtitle = text(before[0]);
+    }
+  }
+
+  if (recipientBlock !== -1) {
+    const nameBlock = recipientBlock + 1;
+    const institutionBlock = recipientBlock + 2;
+    if (isP(nameBlock)) {
+      anchors.recipientNameBlock = nameBlock;
+      const lines = text(nameBlock).split("\n").map((s) => s.trim()).filter(Boolean);
+      meta.recipientName = lines[0];
+      if (lines.length > 1) meta.recipientPosition = lines.slice(1).join(" ");
+    }
+    if (isP(institutionBlock)) {
+      anchors.recipientInstitutionBlock = institutionBlock;
+      meta.recipientInstitution = text(institutionBlock);
+      meta.clientNameGuess = text(institutionBlock);
     }
 
-    // letter number: short paragraph right before the recipient block that
-    // isn't the date itself (e.g. "/P.26")
-    for (let i = recipientBlockIndex - 1; i >= 0; i--) {
-      const b = blocks[i];
-      if (b.type !== "paragraph" || !b.text) continue;
-      if (b === dateBlock) break;
-      if (b.text.length <= 20) meta.letterNumber = b.text.trim();
+    // letter number: the short line between the date and the recipient
+    for (let i = recipientBlock - 1; i > dateBlock; i--) {
+      const t = text(i);
+      if (!isP(i) || !t) continue;
+      if (t.length <= 20) {
+        anchors.letterNumberBlock = i;
+        meta.letterNumber = t;
+      }
       break;
     }
   }
 
   const introIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /de nuestra consideraci/i.test(b.text)
+    (b, i) => isP(i) && /de nuestra consideraci/i.test(ed.text(b))
   );
   if (introIndex !== -1) {
-    const introParas: string[] = [];
+    const paras: string[] = [];
     for (let i = introIndex + 1; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (b.type === "paragraph" && b.text) {
-        if (/^item\s*1/i.test(b.text) || headings.some((h) => h.blockIndex === i)) break;
-        introParas.push(b.text);
-      } else if (b.type === "table") break;
+      if (blocks[i].name === "w:tbl") break;
+      if (sections.some((s) => s.block === i)) break;
+      const t = text(i);
+      if (/^item\s*\d/i.test(t)) break;
+      if (t) paras.push(t);
     }
-    meta.introText = introParas.join("\n\n") || undefined;
+    meta.introText = paras.join("\n\n") || undefined;
   }
 
-  const plazosIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /^plazos$/i.test(b.text.trim())
-  );
+  const plazosIndex = blocks.findIndex((b, i) => isP(i) && /^plazos$/i.test(ed.text(b).trim()));
   const considerationsIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /^consideraciones$/i.test(b.text.trim())
+    (b, i) => isP(i) && /^consideraciones$/i.test(ed.text(b).trim())
   );
-  const closingIndex = blocks.findIndex(
-    (b) => b.type === "paragraph" && /despide atentamente/i.test(b.text)
-  );
+  const closingIndex = blocks.findIndex((b, i) => isP(i) && /despide atentamente/i.test(ed.text(b)));
+
+  const collect = (from: number, to: number) => {
+    const out: string[] = [];
+    for (let i = from; i < to && i < blocks.length; i++) {
+      if (!isP(i)) continue;
+      const t = text(i);
+      if (t) out.push(t);
+    }
+    return out;
+  };
 
   if (plazosIndex !== -1) {
-    const end = considerationsIndex !== -1 ? considerationsIndex : blocks.length;
-    meta.termsText = blocks
-      .slice(plazosIndex + 1, end)
-      .filter((b): b is Extract<DocBlock, { type: "paragraph" }> => b.type === "paragraph")
-      .map((b) => b.text)
-      .filter(Boolean);
+    meta.termsText = collect(
+      plazosIndex + 1,
+      considerationsIndex !== -1 ? considerationsIndex : blocks.length
+    );
   }
-
   if (considerationsIndex !== -1) {
-    const end = closingIndex !== -1 ? closingIndex : blocks.length;
-    meta.considerationsText = blocks
-      .slice(considerationsIndex + 1, end)
-      .filter((b): b is Extract<DocBlock, { type: "paragraph" }> => b.type === "paragraph")
-      .map((b) => b.text)
-      .filter(Boolean);
+    meta.considerationsText = collect(
+      considerationsIndex + 1,
+      closingIndex !== -1 ? closingIndex : blocks.length
+    );
   }
 
   if (closingIndex !== -1) {
-    const closingBlock = blocks[closingIndex];
-    meta.closingText = closingBlock.type === "paragraph" ? closingBlock.text : undefined;
-
-    // signature block: skip a divider line of underscores/dashes, then
-    // name, position, company
-    const rest = blocks
-      .slice(closingIndex + 1)
-      .filter((b): b is Extract<DocBlock, { type: "paragraph" }> => b.type === "paragraph")
-      .map((b) => b.text)
-      .filter(Boolean)
-      .filter((t) => !/^[_\-—\s]{3,}$/.test(t));
-
-    if (rest[0]) meta.signatoryName = rest[0];
-    if (rest[1]) meta.signatoryPosition = rest[1];
-    if (rest[2]) meta.signatoryCompany = rest[2];
+    meta.closingText = text(closingIndex);
+    const rest: { block: number; text: string }[] = [];
+    for (let i = closingIndex + 1; i < blocks.length; i++) {
+      if (!isP(i)) continue;
+      const t = text(i);
+      if (!t || /^[_\-—\s]{3,}$/.test(t)) continue;
+      rest.push({ block: i, text: t });
+    }
+    if (rest[0]) {
+      meta.signatoryName = rest[0].text;
+      anchors.signatureNameBlock = rest[0].block;
+    }
+    if (rest[1]) {
+      meta.signatoryPosition = rest[1].text;
+      anchors.signaturePositionBlock = rest[1].block;
+    }
+    if (rest[2]) meta.signatoryCompany = rest[2].text;
   }
+
+  if (tableBlock !== -1) anchors.tableBlock = tableBlock;
+  meta.anchors = anchors;
 
   return { meta, items, images };
 }

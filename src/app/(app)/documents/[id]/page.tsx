@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import { publicUrl, BUCKETS } from "@/lib/supabase/storage";
-import { createQuoteFromDocument } from "@/lib/actions/quotes";
+import { CreateQuoteForm } from "@/components/quotes/CreateQuoteForm";
 import { deleteSourceDocument } from "@/lib/actions/documents";
 import { SubmitButton } from "@/components/SubmitButton";
 import { formatMoney } from "@/lib/format";
@@ -72,19 +72,17 @@ export default async function DocumentDetailPage({
       {doc.status === "parsed" && (
         <>
           <div className={ui.card}>
-            <div className="flex items-center justify-between">
+            <div className="space-y-4">
               <div>
                 <h2 className="text-sm font-semibold text-slate-900">
                   {items?.length ?? 0} ítem(s) detectados
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Revisa lo detectado y crea una cotización a partir de este documento. Todo será
-                  editable antes de aprobarla.
+                  Elige el formato de salida y crea la cotización. Todo — ítems, precios, fotos y
+                  datos — sigue siendo editable antes de aprobarla.
                 </p>
               </div>
-              <form action={createQuoteFromDocument.bind(null, doc.id)}>
-                <SubmitButton pendingLabel="Creando…">Crear cotización</SubmitButton>
-              </form>
+              <CreateQuoteForm sourceDocumentId={doc.id} />
             </div>
           </div>
 

@@ -14,6 +14,9 @@ export async function uploadAndParseDocument(formData: FormData): Promise<void> 
   if (!(file instanceof File) || file.size === 0) {
     throw new Error("Selecciona un archivo .docx para continuar.");
   }
+  if (!/\.docx$/i.test(file.name)) {
+    throw new Error("Por ahora solo se admiten archivos .docx (Word).");
+  }
 
   const sb = supabaseServer();
   const { data: docType, error: docTypeErr } = await sb
@@ -65,10 +68,16 @@ async function parseSourceDocument(sourceDocumentId: string, buffer: Buffer) {
     const parser = getDocumentParser(DOCUMENT_TYPE_KEY);
     const parsed = await parser(buffer);
 
+    if (parsed.items.length === 0) {
+      throw new Error(
+        "No se encontró una tabla de precios en el documento. Revisa que tenga una sección \"COTIZACIÓN\" con su tabla."
+      );
+    }
+
     const imageIdByKey = new Map<string, string>();
     let imageOrder = 0;
     for (const img of parsed.images) {
-      const ext = img.contentType.split("/")[1] || "png";
+      const ext = img.mediaTarget.split(".").pop()?.toLowerCase() || "png";
       const path = `${sourceDocumentId}/${img.key}.${ext}`;
       const { error: upErr } = await sb.storage
         .from(BUCKETS.documentImages)
@@ -83,6 +92,8 @@ async function parseSourceDocument(sourceDocumentId: string, buffer: Buffer) {
           kind: img.isHeaderCandidate ? "logo_candidate" : "photo",
           section_label: img.sectionLabel ?? null,
           order_index: imageOrder++,
+          media_target: img.mediaTarget,
+          block_index: img.blockIndex,
         })
         .select("id")
         .single();
@@ -101,6 +112,9 @@ async function parseSourceDocument(sourceDocumentId: string, buffer: Buffer) {
           unit_price: item.unitPrice,
           currency: item.currency,
           order_index: itemOrder++,
+          table_row_index: item.tableRowIndex,
+          section_start_block: item.sectionStartBlock ?? null,
+          section_end_block: item.sectionEndBlock ?? null,
         })
         .select("id")
         .single();

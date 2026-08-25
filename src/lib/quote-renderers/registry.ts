@@ -1,5 +1,6 @@
 import type { QuoteRenderer } from "./types";
 import { cartaUfV1 } from "./carta-uf-v1";
+import { reutilityReplicaV1 } from "./reutility-replica-v1";
 
 /**
  * Output-format key (matches `quote_formats.key` in the DB) -> renderer
@@ -7,6 +8,7 @@ import { cartaUfV1 } from "./carta-uf-v1";
  * pages — the "generar" step just looks the key up.
  */
 export const QUOTE_RENDERERS: Record<string, QuoteRenderer> = {
+  reutility_replica_v1: reutilityReplicaV1,
   carta_uf_v1: cartaUfV1,
 };
 

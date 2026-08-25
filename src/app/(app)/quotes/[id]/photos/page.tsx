@@ -24,54 +24,69 @@ export default async function QuotePhotosPage({
 
   const { data: items } = await sb
     .from("quote_items")
-    .select("id, name, order_index")
+    .select("id, name, included, order_index")
     .eq("quote_id", id)
     .order("order_index");
 
-  const itemIds = (items ?? []).map((i) => i.id);
+  const itemIds = (items ?? []).map((i) => i.id as string);
   const { data: photos } = itemIds.length
     ? await sb
         .from("quote_item_photos")
-        .select("id, quote_item_id, storage_path, order_index")
+        .select("id, quote_item_id, storage_path, bucket, order_index")
         .in("quote_item_id", itemIds)
         .order("order_index")
     : { data: [] };
 
   const photosByItem = new Map<string, { id: string; url: string }[]>();
   for (const p of photos ?? []) {
-    const list = photosByItem.get(p.quote_item_id) ?? [];
-    list.push({ id: p.id, url: publicUrl(BUCKETS.quotePhotos, p.storage_path) ?? publicUrl(BUCKETS.documentImages, p.storage_path)! });
-    photosByItem.set(p.quote_item_id, list);
+    const key = p.quote_item_id as string;
+    const list = photosByItem.get(key) ?? [];
+    list.push({
+      id: p.id as string,
+      url: publicUrl((p.bucket as string) || BUCKETS.quotePhotos, p.storage_path as string)!,
+    });
+    photosByItem.set(key, list);
   }
 
-  let gallery: { path: string; url: string }[] = [];
+  let gallery: { path: string; url: string; mediaTarget: string | null }[] = [];
   if (quote.source_document_id) {
     const { data: images } = await sb
       .from("source_document_images")
-      .select("storage_path")
+      .select("storage_path, media_target")
       .eq("source_document_id", quote.source_document_id)
       .eq("kind", "photo")
       .order("order_index");
     gallery = (images ?? []).map((i) => ({
-      path: i.storage_path,
-      url: publicUrl(BUCKETS.documentImages, i.storage_path)!,
+      path: i.storage_path as string,
+      url: publicUrl(BUCKETS.documentImages, i.storage_path as string)!,
+      mediaTarget: (i.media_target as string | null) ?? null,
     }));
   }
 
+  const totalPhotos = (photos ?? []).length;
+
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-500">
-        Cada ítem usa por defecto las fotos detectadas en el documento. Puedes quitarlas, agregar
-        otras desde la galería del documento, subir nuevas o reordenarlas.
-      </p>
+      <div className={`${ui.card} border-brand-200 bg-brand-50`}>
+        <p className="text-sm text-brand-900">
+          Cada ítem ya trae las fotografías que venían en el documento cargado
+          {totalPhotos > 0 ? ` (${totalPhotos} en total)` : ""}. Puedes quitarlas, reordenarlas,
+          subir nuevas o tomar otras de la galería del documento.
+        </p>
+      </div>
 
       <div className="space-y-4">
         {(items ?? []).map((item) => (
-          <div key={item.id} className={ui.card}>
-            <h3 className="mb-3 text-sm font-semibold text-slate-900">{item.name}</h3>
+          <div key={item.id as string} className={`${ui.card} ${item.included ? "" : "opacity-60"}`}>
+            <div className="mb-3 flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-900">{item.name as string}</h3>
+              {!item.included && (
+                <span className={`${ui.badge} bg-slate-100 text-slate-500`}>No incluido</span>
+              )}
+            </div>
             <PhotosEditor
-              quoteItemId={item.id}
-              initialPhotos={photosByItem.get(item.id) ?? []}
+              quoteItemId={item.id as string}
+              initialPhotos={photosByItem.get(item.id as string) ?? []}
               gallery={gallery}
             />
           </div>

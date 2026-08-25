@@ -356,6 +356,7 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
 
 export const cartaUfV1: QuoteRenderer = {
   key: "carta_uf_v1",
-  name: "Carta formal con tabla de ítems",
+  name: "Carta moderna con tabla de ítems",
+  requiresTemplate: false,
   generateDocx,
 };

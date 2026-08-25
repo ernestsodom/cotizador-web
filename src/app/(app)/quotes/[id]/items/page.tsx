@@ -5,6 +5,7 @@ import { ItemsEditor } from "@/components/quotes/ItemsEditor";
 import { ui } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export default async function QuoteItemsPage({
   params,
