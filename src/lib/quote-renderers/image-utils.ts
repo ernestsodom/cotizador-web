@@ -19,6 +19,17 @@ export function scaledDimensions(
   }
 }
 
+/** Width/height of a raster image, or null if it can't be read. */
+export function imageAspect(data: Buffer): number | null {
+  try {
+    const { width, height } = imageSize(data);
+    if (!width || !height) return null;
+    return width / height;
+  } catch {
+    return null;
+  }
+}
+
 const EXT_BY_CONTENT_TYPE: Record<string, "png" | "jpg" | "gif" | "bmp"> = {
   "image/png": "png",
   "image/jpeg": "jpg",

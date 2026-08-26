@@ -6,7 +6,7 @@ import {
   ImageRun,
   AlignmentType,
   BorderStyle,
-  HeadingLevel,
+  ShadingType,
   PositionalTab,
   PositionalTabAlignment,
   PositionalTabLeader,
@@ -19,9 +19,16 @@ import { scaledDimensions, docxImageType } from "./image-utils";
 const PAGE_WIDTH_DXA = 11906; // A4
 const MARGIN_DXA = 1134; // ~2cm
 const CONTENT_WIDTH_DXA = PAGE_WIDTH_DXA - MARGIN_DXA * 2;
-const BRAND_COLOR = "1E3A8A";
-const MUTED_COLOR = "6B7280";
-const RULE_COLOR = "E2E8F0";
+
+// Same palette as the app's own UI (see tailwind.config.ts `brand` scale and
+// src/lib/ui.ts), so the document a client receives reads like an extension
+// of the product rather than a different piece of software.
+const BRAND_900 = "1E3A8A";
+const BRAND_600 = "2563EB";
+const BRAND_50 = "EFF6FF";
+const MUTED = "6B7280"; // slate-500
+const BODY_TEXT = "1F2937"; // slate-800
+const RULE_COLOR = "E2E8F0"; // slate-200
 
 /** Right-aligns the second run against the paragraph's own tab stop. */
 function rightTab() {
@@ -29,6 +36,17 @@ function rightTab() {
     alignment: PositionalTabAlignment.RIGHT,
     relativeTo: PositionalTabRelativeTo.MARGIN,
     leader: PositionalTabLeader.NONE,
+  });
+}
+
+/** A small brand-tinted label, the docx equivalent of the app's pill badges. */
+function sectionLabel(text: string): Paragraph {
+  return new Paragraph({
+    shading: { type: ShadingType.CLEAR, color: "auto", fill: BRAND_50 },
+    spacing: { before: 360, after: 160 },
+    children: [
+      new TextRun({ text: text.toUpperCase(), bold: true, size: 18, color: BRAND_600 }),
+    ],
   });
 }
 
@@ -44,7 +62,11 @@ function textParagraphs(text: string | null | undefined) {
           spacing: { after: 160 },
           children: p
             .split("\n")
-            .flatMap((line, i) => (i === 0 ? [new TextRun(line)] : [new TextRun({ text: line, break: 1 })])),
+            .flatMap((line, i) =>
+              i === 0
+                ? [new TextRun({ text: line, color: BODY_TEXT })]
+                : [new TextRun({ text: line, break: 1, color: BODY_TEXT })]
+            ),
         })
     );
 }
@@ -56,7 +78,7 @@ function bulletParagraphs(lines: string[] | undefined) {
       new Paragraph({
         spacing: { after: 80 },
         indent: { left: 340 },
-        children: [new TextRun(`•  ${line}`)],
+        children: [new TextRun({ text: `•  ${line}`, color: BODY_TEXT })],
       })
   );
 }
@@ -76,9 +98,9 @@ function buildItemBlock(item: RenderItem, isLast: boolean): Paragraph[] {
     new Paragraph({
       spacing: { before: 260, after: 40 },
       children: [
-        new TextRun({ text: item.name, bold: true, size: 26 }),
+        new TextRun({ text: item.name, bold: true, size: 26, color: BODY_TEXT }),
         rightTab(),
-        new TextRun({ text: formatMoney(total, item.currency), bold: true, size: 26, color: BRAND_COLOR }),
+        new TextRun({ text: formatMoney(total, item.currency), bold: true, size: 26, color: BRAND_900 }),
       ],
     })
   );
@@ -90,7 +112,7 @@ function buildItemBlock(item: RenderItem, isLast: boolean): Paragraph[] {
         new TextRun({
           text: `Cantidad: ${item.quantity}   ·   Precio unitario: ${formatMoney(item.unitPrice, item.currency)}`,
           size: 18,
-          color: MUTED_COLOR,
+          color: MUTED,
         }),
       ],
     })
@@ -101,7 +123,7 @@ function buildItemBlock(item: RenderItem, isLast: boolean): Paragraph[] {
       paragraphs.push(
         new Paragraph({
           spacing: { after: 60 },
-          children: [new TextRun({ text: line, size: 20, color: "374151" })],
+          children: [new TextRun({ text: line, size: 20, color: BODY_TEXT })],
         })
       );
     }
@@ -142,14 +164,18 @@ function buildItemsFlow(input: RenderQuoteInput): Paragraph[] {
     paragraphs.push(...buildItemBlock(item, i === input.items.length - 1));
   });
 
+  // A shaded highlight box for the grand total, the same brand-tinted
+  // "card" treatment the app itself uses to draw the eye to a number.
   paragraphs.push(
     new Paragraph({
-      spacing: { before: 320 },
-      border: { top: { style: BorderStyle.SINGLE, size: 12, color: BRAND_COLOR, space: 4 } },
+      spacing: { before: 360, after: 0 },
+      indent: { left: 0, right: 0 },
+      shading: { type: ShadingType.CLEAR, color: "auto", fill: BRAND_50 },
+      border: { top: { style: BorderStyle.SINGLE, size: 12, color: BRAND_900, space: 8 } },
       children: [
-        new TextRun({ text: "TOTAL", bold: true, size: 22, color: MUTED_COLOR }),
+        new TextRun({ text: "TOTAL", bold: true, size: 20, color: BRAND_900 }),
         rightTab(),
-        new TextRun({ text: formatMoney(grandTotal, input.currency), bold: true, size: 32, color: BRAND_COLOR }),
+        new TextRun({ text: formatMoney(grandTotal, input.currency), bold: true, size: 34, color: BRAND_900 }),
       ],
     })
   );
@@ -157,13 +183,24 @@ function buildItemsFlow(input: RenderQuoteInput): Paragraph[] {
   return paragraphs;
 }
 
-async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
+/**
+ * The cover page: logo, an eyebrow label, the proposal's title/subtitle,
+ * an optional cover photo, and who it's prepared for — the same visual
+ * hierarchy the app's own wizard uses (a brand-tinted label, a big bold
+ * heading, muted supporting text), just laid out for a printed page. The
+ * letter itself starts fresh on page two.
+ */
+function buildCoverPage(input: RenderQuoteInput): Paragraph[] {
   const children: Paragraph[] = [];
 
+  children.push(new Paragraph({ spacing: { after: 400 }, children: [] }));
+
   if (input.logo) {
-    const { width, height } = scaledDimensions(input.logo.data, 160, 90);
+    const { width, height } = scaledDimensions(input.logo.data, 220, 120);
     children.push(
       new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 500 },
         children: [
           new ImageRun({
             data: input.logo.data,
@@ -175,30 +212,100 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
     );
   }
 
+  children.push(
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 160 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: BRAND_600, space: 8 } },
+      children: [
+        new TextRun({ text: "PROPUESTA COMERCIAL", bold: true, size: 20, color: BRAND_600 }),
+      ],
+    })
+  );
+
   if (input.title) {
     children.push(
       new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        spacing: { before: 200, after: 200 },
-        children: [new TextRun({ text: input.title, bold: true, size: 30 })],
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 200, after: 160 },
+        children: [new TextRun({ text: input.title, bold: true, size: 48, color: BRAND_900 })],
       })
     );
   }
   if (input.subtitle) {
     children.push(
       new Paragraph({
-        spacing: { after: 200 },
-        children: [new TextRun({ text: input.subtitle, size: 22, color: MUTED_COLOR })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 400 },
+        children: [new TextRun({ text: input.subtitle, size: 24, color: MUTED })],
+      })
+    );
+  }
+
+  if (input.coverImage) {
+    const { width, height } = scaledDimensions(input.coverImage.data, 380, 260);
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 500 },
+        children: [
+          new ImageRun({
+            data: input.coverImage.data,
+            type: docxImageType(input.coverImage.contentType),
+            transformation: { width, height },
+          }),
+        ],
+      })
+    );
+  }
+
+  if (input.clientName) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 300, after: 40 },
+        children: [new TextRun({ text: "PREPARADO PARA", size: 18, color: MUTED, bold: true })],
+      })
+    );
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 500 },
+        children: [new TextRun({ text: input.clientName, bold: true, size: 30, color: BODY_TEXT })],
       })
     );
   }
 
   const dateLine = [input.letterCity, formatDateEs(input.letterDateIso)].filter(Boolean).join(", ");
+  const footerBits = [dateLine ? `${dateLine}.` : null, input.letterNumber].filter(Boolean);
+  if (footerBits.length) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 600 },
+        children: [new TextRun({ text: footerBits.join("   ·   "), size: 20, color: MUTED })],
+      })
+    );
+  }
+
+  return children;
+}
+
+async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
+  const children: Paragraph[] = buildCoverPage(input);
+
+  // ---- letter, starting fresh on page two ----
+  // An empty paragraph carrying just the page break, rather than grafting
+  // pageBreakBefore onto whichever real paragraph happens to come first —
+  // docx-js doesn't expose a Paragraph's own options back out, so rebuilding
+  // one from a "read it back" helper risks silently dropping its content.
+  const letterOpen: Paragraph[] = [new Paragraph({ pageBreakBefore: true, children: [] })];
+  const dateLine = [input.letterCity, formatDateEs(input.letterDateIso)].filter(Boolean).join(", ");
   if (dateLine) {
-    children.push(new Paragraph({ spacing: { after: 100 }, children: [new TextRun(`${dateLine}.`)] }));
+    letterOpen.push(new Paragraph({ spacing: { after: 100 }, children: [new TextRun(`${dateLine}.`)] }));
   }
   if (input.letterNumber) {
-    children.push(
+    letterOpen.push(
       new Paragraph({
         alignment: AlignmentType.RIGHT,
         spacing: { after: 300 },
@@ -208,60 +315,47 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
   }
 
   if (input.recipientName || input.recipientInstitution) {
-    children.push(new Paragraph({ children: [new TextRun("Señor(a)")] }));
+    letterOpen.push(new Paragraph({ children: [new TextRun("Señor(a)")] }));
     if (input.recipientName) {
-      children.push(
+      letterOpen.push(
         new Paragraph({ children: [new TextRun({ text: input.recipientName, bold: true })] })
       );
     }
     if (input.recipientPosition) {
-      children.push(new Paragraph({ children: [new TextRun(input.recipientPosition)] }));
+      letterOpen.push(new Paragraph({ children: [new TextRun(input.recipientPosition)] }));
     }
     if (input.recipientInstitution) {
-      children.push(new Paragraph({ children: [new TextRun(input.recipientInstitution)] }));
+      letterOpen.push(new Paragraph({ children: [new TextRun(input.recipientInstitution)] }));
     }
-    children.push(new Paragraph({ spacing: { after: 300 }, children: [new TextRun("Presente")] }));
+    letterOpen.push(new Paragraph({ spacing: { after: 300 }, children: [new TextRun("Presente")] }));
   }
 
-  children.push(
+  letterOpen.push(
     new Paragraph({ spacing: { after: 200 }, children: [new TextRun("De nuestra consideración:")] })
   );
 
+  children.push(...letterOpen);
+
   children.push(...textParagraphs(input.introText));
 
-  children.push(
-    new Paragraph({
-      spacing: { before: 200, after: 40 },
-      children: [new TextRun({ text: "COTIZACIÓN", bold: true, size: 24, color: BRAND_COLOR })],
-    })
-  );
+  children.push(sectionLabel("Cotización"));
   children.push(...buildItemsFlow(input));
 
   if (input.termsText?.length) {
-    children.push(
-      new Paragraph({
-        spacing: { before: 400, after: 120 },
-        children: [new TextRun({ text: "PLAZOS", bold: true, size: 22 })],
-      })
-    );
+    children.push(sectionLabel("Plazos"));
     children.push(
       ...input.termsText.map((t) => new Paragraph({ spacing: { after: 100 }, children: [new TextRun(t)] }))
     );
   }
 
   if (input.considerationsText?.length) {
-    children.push(
-      new Paragraph({
-        spacing: { before: 300, after: 120 },
-        children: [new TextRun({ text: "CONSIDERACIONES", bold: true, size: 22 })],
-      })
-    );
+    children.push(sectionLabel("Consideraciones"));
     children.push(...bulletParagraphs(input.considerationsText));
   }
 
   children.push(
     new Paragraph({
-      spacing: { before: 300, after: 200 },
+      spacing: { before: 400, after: 200 },
       children: [new TextRun(input.closingText || "Sin otro particular, se despide atentamente.")],
     })
   );

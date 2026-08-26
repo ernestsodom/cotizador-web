@@ -2,6 +2,7 @@ import { DocxEditor } from "@/lib/docx-template/docx-editor";
 import { findAll, type XmlElement } from "@/lib/docx-template/xml-tree";
 import { formatChileanNumber } from "@/lib/document-parsers/text-utils";
 import { formatDateEs } from "@/lib/format";
+import { imageAspect } from "./image-utils";
 import type { QuoteRenderer, RenderQuoteInput, RenderItem, RenderImage } from "./types";
 
 /**
@@ -94,9 +95,7 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
       }
     }
   }
-  for (const [oldText, newText] of input.textReplacements ?? []) {
-    ed.replaceTextEverywhere(oldText, newText, sweepSkip);
-  }
+  ed.replaceTextEverywhere(input.textReplacements ?? [], sweepSkip);
 
   // ---- cover ----
   const drawingsByMedia = indexDrawingsByMedia(ed);
@@ -215,13 +214,27 @@ function replaceFirstDrawingImage(ed: DocxEditor, block: XmlElement, image: Rend
     ed.replaceMedia(target, image.data);
     break;
   }
+  // the uploaded logo/cover rarely shares the original's proportions —
+  // refit every drawing on this block so it isn't stretched into a frame
+  // sized for a different-shaped picture.
+  const aspect = imageAspect(image.data);
+  if (aspect) {
+    for (const drawing of drawings) ed.resizeDrawingToAspect(drawing, aspect);
+  }
 }
 
 /**
  * Reconciles an item's chosen photos against the slots it occupies in the
- * template: untouched photos stay byte-identical, changed ones replace the
- * slot's bytes, removed ones drop the drawing, and extra ones are cloned
- * from the last slot so they inherit its size and anchoring.
+ * template. Matching is done by `sourceMediaTarget`, not by array position:
+ * an item's photo list can have a new upload inserted or removed from the
+ * middle, which would shift every position after it, so pairing photo[i]
+ * with slot[i] silently pushed the wrong bytes into the wrong frame — one
+ * way the "se descuadran" complaint showed up even for photos the user
+ * never touched. A photo whose sourceMediaTarget still matches one of the
+ * item's own slots keeps that slot untouched (byte-identical); everything
+ * else — reorders included — is treated as a change and fills the
+ * remaining slots in order, refitting each frame to the new picture's own
+ * proportions so it isn't stretched into a box sized for a different one.
  */
 function applyItemPhotos(
   ed: DocxEditor,
@@ -238,23 +251,46 @@ function applyItemPhotos(
   if (slots.length === 0) return;
 
   const photos = item.photos ?? [];
+  const usedPhoto = new Set<number>();
+  const usedSlot = new Set<number>();
 
-  for (let i = 0; i < slots.length; i++) {
-    const slot = slots[i];
-    const photo = photos[i];
-    if (!photo) {
+  // pass 1: keep byte-identical any photo still referencing one of this
+  // item's own slots.
+  slots.forEach((slot, si) => {
+    const pi = photos.findIndex(
+      (p, i) => !usedPhoto.has(i) && p.sourceMediaTarget && p.sourceMediaTarget === slot.target
+    );
+    if (pi !== -1) {
+      usedSlot.add(si);
+      usedPhoto.add(pi);
+    }
+  });
+
+  const leftoverPhotos = photos.map((_, i) => i).filter((i) => !usedPhoto.has(i));
+  const emptySlots = slots.map((_, i) => i).filter((i) => !usedSlot.has(i));
+
+  // pass 2: fill the now-empty slots, in order, with whatever photos are
+  // left — new uploads, or originals reordered away from their own slot.
+  let li = 0;
+  for (const si of emptySlots) {
+    const slot = slots[si];
+    if (li >= leftoverPhotos.length) {
       ed.remove(slot.drawing);
       continue;
     }
-    if (photo.sourceMediaTarget === slot.target) continue; // unchanged
+    const photo = photos[leftoverPhotos[li++]];
     ed.replaceMedia(slot.target, photo.data);
+    ed.resizeDrawingToAspect(slot.drawing, imageAspect(photo.data));
   }
 
-  if (photos.length > slots.length) {
+  // pass 3: more photos than the template had slots for — append them,
+  // sized to their own proportions rather than the anchor's box.
+  if (li < leftoverPhotos.length) {
     const anchorDrawing = slots[slots.length - 1].drawing;
-    for (let i = slots.length; i < photos.length; i++) {
-      const relId = ed.addMedia(photos[i].data, extensionFor(photos[i].contentType));
-      ed.cloneDrawingAfter(anchorDrawing, relId);
+    for (; li < leftoverPhotos.length; li++) {
+      const photo = photos[leftoverPhotos[li]];
+      const relId = ed.addMedia(photo.data, extensionFor(photo.contentType));
+      ed.cloneDrawingAfter(anchorDrawing, relId, imageAspect(photo.data) ?? undefined);
     }
   }
 }

@@ -17,6 +17,24 @@ import {
  * and page setup are preserved exactly. This is what lets the "replica"
  * quote format look identical to the document it was built from.
  */
+/**
+ * Given a drawing's current box (cx, cy, in EMU) and a new image's aspect
+ * ratio (width/height), returns the largest box of that aspect ratio that
+ * still fits inside the original one — same "contain" fit used for photos
+ * placed fresh, so a replacement image is never stretched to a frame sized
+ * for a differently-shaped picture. Returns null if the box can't be read.
+ */
+function fitExtent(cx: number, cy: number, aspect: number): { cx: number; cy: number } | null {
+  if (!cx || !cy) return null;
+  let newCx = cx;
+  let newCy = Math.round(cx / aspect);
+  if (newCy > cy) {
+    newCy = cy;
+    newCx = Math.round(cy * aspect);
+  }
+  return { cx: newCx, cy: newCy };
+}
+
 export class DocxEditor {
   private zip: JSZip;
   private xml: string;
@@ -265,13 +283,55 @@ export class DocxEditor {
     }
   }
 
-  /** Duplicates a drawing inside the same paragraph, pointing the copy at `relId`. */
-  cloneDrawingAfter(drawing: XmlElement, relId: string): void {
+  /**
+   * Duplicates a drawing inside the same paragraph, pointing the copy at
+   * `relId`. When `aspect` (width/height of the new image) is given, the
+   * clone's declared size is refit to that aspect ratio, contained within
+   * the original drawing's box, instead of inheriting its exact box —
+   * otherwise a photo added past the template's own slots would come out
+   * stretched to fit a frame sized for a differently-shaped picture.
+   */
+  cloneDrawingAfter(drawing: XmlElement, relId: string, aspect?: number): void {
     let clone = this.xml.slice(drawing.start, drawing.end);
     clone = clone.replace(/r:embed="[^"]*"/g, `r:embed="${relId}"`);
     clone = clone.replace(/(<wp:docPr\b[^>]*\bid=")\d+(")/g, `$1${++this.nextDocPrId}$2`);
     clone = clone.replace(/(<pic:cNvPr\b[^>]*\bid=")\d+(")/g, `$1${++this.nextDocPrId}$2`);
+    if (aspect && Number.isFinite(aspect)) {
+      clone = clone.replace(
+        /(<(?:wp:extent|a:ext)\b[^>]*\bcx=")(\d+)("[^>]*\bcy=")(\d+)("[^>]*\/?>)/g,
+        (full: string, pre: string, cxStr: string, mid: string, cyStr: string, post: string) => {
+          const fit = fitExtent(parseInt(cxStr, 10), parseInt(cyStr, 10), aspect);
+          if (!fit) return full;
+          return `${pre}${fit.cx}${mid}${fit.cy}${post}`;
+        }
+      );
+    }
     this.splices.push({ start: drawing.end, end: drawing.end, text: clone });
+  }
+
+  /**
+   * Resizes a drawing's declared extent (both the outer `wp:extent` and the
+   * inner picture `a:xfrm`/`a:ext`) so an image of `aspect` (width/height)
+   * displays without distortion, contained within the box the drawing
+   * already occupies — used after replaceMedia() swaps in a photo whose
+   * proportions differ from the one it replaces, since replaceMedia() only
+   * changes the bytes and leaves the old box in place.
+   */
+  resizeDrawingToAspect(drawing: XmlElement, aspect: number | null | undefined): void {
+    if (!aspect || !Number.isFinite(aspect)) return;
+    for (const ext of findAllOf(drawing, ["wp:extent", "a:ext"])) {
+      const tagEnd = ext.selfClosing ? ext.end : ext.innerStart;
+      const tagXml = this.xml.slice(ext.start, tagEnd);
+      const cxMatch = tagXml.match(/cx="(\d+)"/);
+      const cyMatch = tagXml.match(/cy="(\d+)"/);
+      if (!cxMatch || !cyMatch) continue;
+      const fit = fitExtent(parseInt(cxMatch[1], 10), parseInt(cyMatch[1], 10), aspect);
+      if (!fit) continue;
+      const newTag = tagXml
+        .replace(/cx="\d+"/, `cx="${fit.cx}"`)
+        .replace(/cy="\d+"/, `cy="${fit.cy}"`);
+      this.splices.push({ start: ext.start, end: tagEnd, text: newTag });
+    }
   }
 
   drawingsIn(el: XmlElement): XmlElement[] {
@@ -279,24 +339,39 @@ export class DocxEditor {
   }
 
   /**
-   * Replaces every occurrence of `oldText` with `newText` across the
-   * letter's top-level paragraphs (intro, section descriptions, terms,
-   * considerations, closing) — the running text that isn't driven by a
-   * specific field. Table cells and anchored fields (title, date,
-   * recipient, signature…) get their own targeted writes instead of this
-   * sweep, both because they need the exact new value rather than a
-   * substring swap and because writing the same run twice would collide;
-   * pass their paragraphs in `skip` so this pass leaves them alone.
-   * Returns how many paragraphs changed.
+   * Applies every [oldText, newText] pair across the letter's top-level
+   * paragraphs (intro, section descriptions, terms, considerations,
+   * closing) — the running text that isn't driven by a specific field.
+   * Table cells and anchored fields (title, date, recipient, signature…)
+   * get their own targeted writes instead of this sweep, both because they
+   * need the exact new value rather than a substring swap and because
+   * writing the same run twice would collide; pass their paragraphs in
+   * `skip` so this pass leaves them alone.
+   *
+   * All pairs are resolved against a paragraph's text before anything is
+   * written, and each paragraph is written at most once. Running each pair
+   * as its own full sweep (the previous shape of this method) reread the
+   * same untouched `this.xml` for every pair, so a paragraph matching two
+   * pairs — e.g. the client's name being a substring of the institution's,
+   * "Melipilla" inside "Municipalidad de Melipilla" — got a second splice
+   * over runs the first pair had already rewritten, and `applySplices`
+   * throws on that overlap. Returns how many paragraphs changed.
    */
-  replaceTextEverywhere(oldText: string, newText: string, skip?: Set<XmlElement>): number {
-    if (!oldText || oldText === newText) return 0;
+  replaceTextEverywhere(pairs: [string, string][], skip?: Set<XmlElement>): number {
+    const active = pairs.filter(([oldText, newText]) => oldText && oldText !== newText);
+    if (active.length === 0) return 0;
     let count = 0;
     for (const block of this.blocks()) {
       if (block.name !== "w:p" || skip?.has(block)) continue;
-      const current = this.text(block);
-      if (!current.includes(oldText)) continue;
-      this.setParagraphLines(block, current.split(oldText).join(newText).split("\n"));
+      let text = this.text(block);
+      let changed = false;
+      for (const [oldText, newText] of active) {
+        if (!text.includes(oldText)) continue;
+        text = text.split(oldText).join(newText);
+        changed = true;
+      }
+      if (!changed) continue;
+      this.setParagraphLines(block, text.split("\n"));
       count++;
     }
     return count;
