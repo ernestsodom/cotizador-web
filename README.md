@@ -11,6 +11,12 @@ Datos → Borrador → Aprobar → Generar**.
 Las fotografías de cada ítem vienen por defecto del documento cargado, y se
 pueden quitar, reemplazar, reordenar o complementar con fotos nuevas.
 
+Los documentos (y las cotizaciones nacidas de ellos) se agrupan en carpetas
+por cliente o proyecto, así se puede trabajar varias cotizaciones del mismo
+cliente por separado sin perder el contexto. Renombrar el cliente en el
+paso "Datos" reemplaza esa mención en todo el documento — no solo en el
+campo, también en la carta y las secciones que la citan.
+
 ## Stack
 
 - [Next.js](https://nextjs.org) 14 (App Router, TypeScript, Server Actions) — desplegado en [Vercel](https://vercel.com)
@@ -47,6 +53,23 @@ escribir los valores nuevos en el mismo sitio.
 Esto es lo que hace que **cualquier documento nuevo funcione igual**: al
 subir la cotización de otro software, esa misma cotización se convierte en la
 plantilla de su formato original.
+
+### Renombrar el cliente en todo el documento
+
+Cuando el nombre del cliente o de la institución destinataria cambia respecto
+a lo que traía el documento original (p. ej. "Municipalidad de Melipilla" →
+"Proexsi"), el sistema no solo actualiza ese campo: busca y reemplaza el
+texto original en toda la carta (introducción, secciones, consideraciones),
+además del bloque de destinatario. `DocxEditor.replaceTextEverywhere`
+hace ese barrido en la réplica exacta; para el formato moderno, el mismo
+reemplazo se aplica a los textos antes de redactar el documento nuevo.
+
+### Borrador = documento real
+
+El paso "Borrador" no dibuja una aproximación: descarga el mismo .docx que
+generaría la aprobación final (`src/lib/quotes/render.ts`) y lo renderiza en
+el navegador con [`docx-preview`](https://github.com/VolodymyrBaydalka/docxjs),
+así que lo que se revisa ahí es exactamente lo que se entrega.
 
 ## Arquitectura (pensada para crecer)
 

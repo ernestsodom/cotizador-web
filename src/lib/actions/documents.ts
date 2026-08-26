@@ -28,6 +28,21 @@ export async function uploadAndParseDocument(formData: FormData): Promise<void> 
     throw new Error("El tipo de documento no está configurado en la base de datos.");
   }
 
+  // Folder/project: either an existing one was picked, or a new name was
+  // typed in — group documents (and the quotes born from them) so several
+  // quotes for the same client can be worked on as separate items together.
+  let projectId = String(formData.get("projectId") ?? "").trim() || null;
+  const newProjectName = String(formData.get("newProjectName") ?? "").trim();
+  if (newProjectName) {
+    const { data: project, error: projectErr } = await sb
+      .from("projects")
+      .insert({ name: newProjectName })
+      .select("id")
+      .single();
+    if (projectErr || !project) throw new Error("No se pudo crear la carpeta.");
+    projectId = project.id as string;
+  }
+
   const buffer = Buffer.from(await file.arrayBuffer());
   const storagePath = `${randomUUID()}-${sanitizeStorageFilename(file.name)}`;
 
@@ -49,6 +64,7 @@ export async function uploadAndParseDocument(formData: FormData): Promise<void> 
       original_filename: file.name,
       storage_path: storagePath,
       status: "parsing",
+      project_id: projectId,
     })
     .select("id")
     .single();

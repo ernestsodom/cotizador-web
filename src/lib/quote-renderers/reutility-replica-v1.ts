@@ -63,6 +63,41 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
   const at = (i: number | undefined | null) =>
     i !== undefined && i !== null && i >= 0 && i < blocks.length ? blocks[i] : null;
 
+  const titleP = at(anchors.titleBlock);
+  const subtitleP = at(anchors.subtitleBlock);
+  const dateP = at(anchors.dateBlock);
+  const letterNumberP = at(anchors.letterNumberBlock);
+  const recipientP = at(anchors.recipientNameBlock);
+  const institutionP = at(anchors.recipientInstitutionBlock);
+  const signNameP = at(anchors.signatureNameBlock);
+  const signPosP = at(anchors.signaturePositionBlock);
+
+  // ---- find-and-replace of running text (e.g. the client's name), before
+  // any targeted writes so the two mechanisms never touch the same run.
+  // Anchored fields get the exact new value directly, below; everything
+  // else in the letter body (intro, section text, terms, considerations)
+  // is swept here instead. Sections belonging to excluded items are also
+  // skipped when they're about to be deleted wholesale — editing text
+  // inside a range and then removing that same range crashes the splice
+  // writer, since the two edits would overlap.
+  const sweepSkip = new Set<XmlElement>(
+    [titleP, subtitleP, dateP, letterNumberP, recipientP, institutionP, signNameP, signPosP].filter(
+      (p): p is XmlElement => !!p
+    )
+  );
+  if (input.removeExcludedSections !== false) {
+    for (const item of input.excludedItems ?? []) {
+      if (item.sectionStartBlock == null || item.sectionEndBlock == null) continue;
+      for (let i = item.sectionStartBlock; i <= item.sectionEndBlock; i++) {
+        const b = blocks[i];
+        if (b) sweepSkip.add(b);
+      }
+    }
+  }
+  for (const [oldText, newText] of input.textReplacements ?? []) {
+    ed.replaceTextEverywhere(oldText, newText, sweepSkip);
+  }
+
   // ---- cover ----
   const drawingsByMedia = indexDrawingsByMedia(ed);
   const coverLogo = at(anchors.coverLogoBlock);
@@ -74,40 +109,31 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
     replaceFirstDrawingImage(ed, coverArt, input.coverImage);
   }
 
-  const titleP = at(anchors.titleBlock);
   if (titleP && input.title) ed.setParagraphText(titleP, input.title);
-
-  const subtitleP = at(anchors.subtitleBlock);
   if (subtitleP && input.subtitle) ed.setParagraphText(subtitleP, input.subtitle);
 
   // ---- letter head ----
-  const dateP = at(anchors.dateBlock);
   if (dateP) {
     const city = input.letterCity?.trim();
     const dateText = formatDateEs(input.letterDateIso);
     ed.setParagraphText(dateP, city ? `${city}, ${dateText}. ` : `${dateText}. `);
   }
 
-  const letterNumberP = at(anchors.letterNumberBlock);
   if (letterNumberP && input.letterNumber) {
     ed.setParagraphText(letterNumberP, input.letterNumber);
   }
 
-  const recipientP = at(anchors.recipientNameBlock);
   if (recipientP) {
     const lines = [input.recipientName ?? "", input.recipientPosition ?? ""].filter(Boolean);
     if (lines.length) ed.setParagraphLines(recipientP, lines);
   }
 
-  const institutionP = at(anchors.recipientInstitutionBlock);
   if (institutionP && input.recipientInstitution) {
     ed.setParagraphText(institutionP, input.recipientInstitution);
   }
 
   // ---- signature ----
-  const signNameP = at(anchors.signatureNameBlock);
   if (signNameP && input.signatoryName) ed.setParagraphText(signNameP, input.signatoryName);
-  const signPosP = at(anchors.signaturePositionBlock);
   if (signPosP && input.signatoryPosition) ed.setParagraphText(signPosP, input.signatoryPosition);
 
   // ---- pricing table ----

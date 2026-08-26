@@ -41,6 +41,44 @@ async function loadOne(
 }
 
 /**
+ * [oldText, newText] pairs for fields the user can rename after the fact —
+ * the client, its institution name, the person it's addressed to — as the
+ * source document originally had them vs. what the quote now says. Used to
+ * carry a rename through every place that text appears, not just its own
+ * field: change "Municipalidad de Melipilla" to "Proexsi" once, and it
+ * updates the intro paragraph, the considerations, any section that
+ * mentions it too.
+ */
+function textReplacementPairs(
+  sourceMeta: ParsedDocumentMeta,
+  quote: Record<string, unknown>
+): [string, string][] {
+  const pairs: [string, string][] = [];
+  const add = (oldText: string | undefined, newText: unknown) => {
+    if (oldText && typeof newText === "string" && newText && newText !== oldText) {
+      pairs.push([oldText, newText]);
+    }
+  };
+  add(sourceMeta.recipientInstitution, quote.recipient_institution);
+  add(sourceMeta.clientNameGuess, quote.client_name);
+  add(sourceMeta.recipientName, quote.recipient_name);
+  return pairs;
+}
+
+function applyPairs(text: string, pairs: [string, string][]): string {
+  let out = text;
+  for (const [oldText, newText] of pairs) out = out.split(oldText).join(newText);
+  return out;
+}
+
+function applyPairsOrNull(
+  text: string | null | undefined,
+  pairs: [string, string][]
+): string | null {
+  return text == null ? null : applyPairs(text, pairs);
+}
+
+/**
  * Produces the quote document exactly as it will be delivered. The draft
  * preview and the final generation both go through here, so what the user
  * approves is byte-for-byte what they download.
@@ -101,36 +139,6 @@ export async function renderQuoteDocx(quoteId: string): Promise<Buffer> {
     };
   };
 
-  const buildItem = async (row: Record<string, unknown>): Promise<RenderItem> => {
-    const rows = photosByItem.get(row.id as string) ?? [];
-    return {
-      name: row.name as string,
-      description: (row.description as string | null) ?? null,
-      quantity: Number(row.quantity),
-      unitPrice: Number(row.unit_price),
-      currency: row.currency as string,
-      photos: await loadPhotos(rows),
-      ...anchorsOf(row),
-      templatePhotoTargets: rows
-        .map((p) => p.source_media_target)
-        .filter((t): t is string => !!t),
-    };
-  };
-
-  const rowsArr = (allItems ?? []) as Record<string, unknown>[];
-  const includedRows = rowsArr.filter((i) => i.included);
-  const excludedRows = rowsArr.filter((i) => !i.included);
-
-  const items = await Promise.all(includedRows.map(buildItem));
-  const excludedItems: RenderItem[] = excludedRows.map((row) => ({
-    name: row.name as string,
-    quantity: Number(row.quantity),
-    unitPrice: Number(row.unit_price),
-    currency: row.currency as string,
-    photos: [],
-    ...anchorsOf(row),
-  }));
-
   let sourceMeta: ParsedDocumentMeta = {};
   let templateDocx: Buffer | null = null;
   if (quote.source_document_id) {
@@ -159,6 +167,38 @@ export async function renderQuoteDocx(quoteId: string): Promise<Buffer> {
     );
   }
 
+  const pairs = textReplacementPairs(sourceMeta, quote as Record<string, unknown>);
+
+  const buildItem = async (row: Record<string, unknown>): Promise<RenderItem> => {
+    const rows = photosByItem.get(row.id as string) ?? [];
+    return {
+      name: applyPairs(row.name as string, pairs),
+      description: applyPairsOrNull(row.description as string | null, pairs),
+      quantity: Number(row.quantity),
+      unitPrice: Number(row.unit_price),
+      currency: row.currency as string,
+      photos: await loadPhotos(rows),
+      ...anchorsOf(row),
+      templatePhotoTargets: rows
+        .map((p) => p.source_media_target)
+        .filter((t): t is string => !!t),
+    };
+  };
+
+  const rowsArr = (allItems ?? []) as Record<string, unknown>[];
+  const includedRows = rowsArr.filter((i) => i.included);
+  const excludedRows = rowsArr.filter((i) => !i.included);
+
+  const items = await Promise.all(includedRows.map(buildItem));
+  const excludedItems: RenderItem[] = excludedRows.map((row) => ({
+    name: applyPairs(row.name as string, pairs),
+    quantity: Number(row.quantity),
+    unitPrice: Number(row.unit_price),
+    currency: row.currency as string,
+    photos: [],
+    ...anchorsOf(row),
+  }));
+
   const [logoRow, signatoryRow] = await Promise.all([
     quote.logo_id
       ? sb.from("logos").select("storage_path").eq("id", quote.logo_id).single()
@@ -183,19 +223,19 @@ export async function renderQuoteDocx(quoteId: string): Promise<Buffer> {
   ]);
 
   return renderer.generateDocx({
-    title: quote.title as string | null,
-    subtitle: (quote.subtitle as string | null) ?? sourceMeta.subtitle ?? null,
+    title: applyPairsOrNull(quote.title as string | null, pairs),
+    subtitle: applyPairsOrNull((quote.subtitle as string | null) ?? sourceMeta.subtitle ?? null, pairs),
     letterCity: sourceMeta.letterCity,
     letterDateIso: quote.letter_date as string,
-    letterNumber: quote.letter_number as string | null,
+    letterNumber: applyPairsOrNull(quote.letter_number as string | null, pairs),
     recipientName: quote.recipient_name as string | null,
-    recipientPosition: quote.recipient_position as string | null,
+    recipientPosition: applyPairsOrNull(quote.recipient_position as string | null, pairs),
     recipientInstitution: quote.recipient_institution as string | null,
     clientName: quote.client_name as string | null,
-    introText: sourceMeta.introText,
-    termsText: sourceMeta.termsText,
-    considerationsText: sourceMeta.considerationsText,
-    closingText: sourceMeta.closingText,
+    introText: applyPairsOrNull(sourceMeta.introText, pairs),
+    termsText: sourceMeta.termsText?.map((t) => applyPairs(t, pairs)),
+    considerationsText: sourceMeta.considerationsText?.map((t) => applyPairs(t, pairs)),
+    closingText: applyPairsOrNull(sourceMeta.closingText, pairs),
     currency: quote.currency as string,
     items,
     excludedItems,
@@ -207,6 +247,7 @@ export async function renderQuoteDocx(quoteId: string): Promise<Buffer> {
     signatureImage,
     templateDocx,
     anchors: sourceMeta.anchors ?? null,
+    textReplacements: pairs,
   });
 }
 

@@ -54,6 +54,14 @@ export interface RenderQuoteInput {
   /** Items the user unchecked — their table rows and sections come out. */
   excludedItems?: RenderItem[];
   removeExcludedSections?: boolean;
+  /**
+   * [oldText, newText] pairs — e.g. the client's name as the source document
+   * originally had it vs. what the user changed it to. Free-text fields
+   * above (introText, item descriptions, etc.) already have these applied;
+   * replica rendering additionally sweeps the untouched body of the
+   * original document for the same text.
+   */
+  textReplacements?: [string, string][];
 }
 
 export interface QuoteRenderer {

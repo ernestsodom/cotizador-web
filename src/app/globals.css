@@ -17,3 +17,18 @@ body {
     display: none !important;
   }
 }
+
+/* docx-preview renders each page as its own <section class="docx">; space
+   them out and give them a subtle shadow so they read as sheets of paper. */
+.docx-preview-host .docx-wrapper {
+  background: transparent !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 0 !important;
+}
+.docx-preview-host .docx-wrapper > section.docx {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.08);
+  margin: 0 !important;
+}

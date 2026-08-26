@@ -18,6 +18,15 @@ create table quote_formats (
   created_at timestamptz not null default now()
 );
 
+-- Folders that group documents and their quotes by client/engagement, so
+-- several quotes for the same client can be worked on as separate items
+-- inside one place instead of a flat document list.
+create table projects (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
 create table source_documents (
   id uuid primary key default gen_random_uuid(),
   document_type_id uuid not null references document_types(id),
@@ -26,6 +35,7 @@ create table source_documents (
   status text not null default 'uploaded' check (status in ('uploaded','parsing','parsed','error')),
   error_message text,
   parsed_meta jsonb not null default '{}'::jsonb,
+  project_id uuid references projects(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -86,6 +96,7 @@ create table quotes (
   source_document_id uuid references source_documents(id),
   quote_format_id uuid not null references quote_formats(id),
   status text not null default 'draft' check (status in ('draft','approved','generated')),
+  project_id uuid references projects(id),
   title text,
   subtitle text,
   cover_image_path text,
@@ -143,6 +154,9 @@ create table quote_item_photos (
   created_at timestamptz not null default now()
 );
 
+create index if not exists source_documents_project_id_idx on source_documents(project_id);
+create index if not exists quotes_project_id_idx on quotes(project_id);
+
 insert into document_types (key, name) values
   ('carta_cotizacion_v1', 'Carta de Cotización (Propuesta Comercial)');
 
@@ -181,6 +195,7 @@ alter table quotes enable row level security;
 alter table quote_items enable row level security;
 alter table quote_item_photos enable row level security;
 alter table app_settings enable row level security;
+alter table projects enable row level security;
 
 -- v1: no Supabase Auth users yet. The Next.js app is gated by a shared
 -- app-level password (middleware), and talks to Postgres using the anon
@@ -194,7 +209,7 @@ begin
   for t in select unnest(array[
     'document_types','quote_formats','source_documents','source_document_images',
     'source_document_items','source_document_item_images','logos','signatories',
-    'quotes','quote_items','quote_item_photos','app_settings'
+    'quotes','quote_items','quote_item_photos','app_settings','projects'
   ])
   loop
     execute format('create policy "anon_full_access" on %I for all to anon using (true) with check (true);', t);

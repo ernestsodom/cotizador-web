@@ -278,6 +278,30 @@ export class DocxEditor {
     return findAll(el, "w:drawing");
   }
 
+  /**
+   * Replaces every occurrence of `oldText` with `newText` across the
+   * letter's top-level paragraphs (intro, section descriptions, terms,
+   * considerations, closing) — the running text that isn't driven by a
+   * specific field. Table cells and anchored fields (title, date,
+   * recipient, signature…) get their own targeted writes instead of this
+   * sweep, both because they need the exact new value rather than a
+   * substring swap and because writing the same run twice would collide;
+   * pass their paragraphs in `skip` so this pass leaves them alone.
+   * Returns how many paragraphs changed.
+   */
+  replaceTextEverywhere(oldText: string, newText: string, skip?: Set<XmlElement>): number {
+    if (!oldText || oldText === newText) return 0;
+    let count = 0;
+    for (const block of this.blocks()) {
+      if (block.name !== "w:p" || skip?.has(block)) continue;
+      const current = this.text(block);
+      if (!current.includes(oldText)) continue;
+      this.setParagraphLines(block, current.split(oldText).join(newText).split("\n"));
+      count++;
+    }
+    return count;
+  }
+
   async save(): Promise<Buffer> {
     const finalXml = applySplices(this.xml, this.splices);
     this.zip.file("word/document.xml", finalXml);

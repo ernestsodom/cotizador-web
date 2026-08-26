@@ -27,7 +27,7 @@ export async function createQuoteFromDocument(
 
   const { data: sourceDoc } = await sb
     .from("source_documents")
-    .select("id, parsed_meta")
+    .select("id, parsed_meta, project_id")
     .eq("id", sourceDocumentId)
     .single();
   if (!sourceDoc) throw new Error("Documento no encontrado.");
@@ -38,6 +38,7 @@ export async function createQuoteFromDocument(
     .from("quotes")
     .insert({
       source_document_id: sourceDocumentId,
+      project_id: sourceDoc.project_id,
       quote_format_id: format.id,
       status: "draft",
       title: meta.title ?? "Propuesta comercial",

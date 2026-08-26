@@ -27,15 +27,24 @@ export default async function QuoteLayout({
   const sb = supabaseServer();
   const { data: quote } = await sb
     .from("quotes")
-    .select("id, title, status, client_name")
+    .select("id, title, status, client_name, project_id")
     .eq("id", id)
     .single();
   if (!quote) notFound();
+
+  const { data: project } = quote.project_id
+    ? await sb.from("projects").select("name").eq("id", quote.project_id).single()
+    : { data: null };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
+          {project && (
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-brand-600">
+              📁 {project.name as string}
+            </p>
+          )}
           <h1 className="text-xl font-semibold text-slate-900">
             {quote.title || "Cotización"}
             {quote.client_name ? ` — ${quote.client_name}` : ""}

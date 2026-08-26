@@ -4,14 +4,13 @@ import {
   Paragraph,
   TextRun,
   ImageRun,
-  Table,
-  TableRow,
-  TableCell,
-  WidthType,
   AlignmentType,
   BorderStyle,
-  ShadingType,
   HeadingLevel,
+  PositionalTab,
+  PositionalTabAlignment,
+  PositionalTabLeader,
+  PositionalTabRelativeTo,
 } from "docx";
 import type { QuoteRenderer, RenderQuoteInput, RenderItem } from "./types";
 import { formatDateEs, formatMoney } from "@/lib/format";
@@ -20,6 +19,18 @@ import { scaledDimensions, docxImageType } from "./image-utils";
 const PAGE_WIDTH_DXA = 11906; // A4
 const MARGIN_DXA = 1134; // ~2cm
 const CONTENT_WIDTH_DXA = PAGE_WIDTH_DXA - MARGIN_DXA * 2;
+const BRAND_COLOR = "1E3A8A";
+const MUTED_COLOR = "6B7280";
+const RULE_COLOR = "E2E8F0";
+
+/** Right-aligns the second run against the paragraph's own tab stop. */
+function rightTab() {
+  return new PositionalTab({
+    alignment: PositionalTabAlignment.RIGHT,
+    relativeTo: PositionalTabRelativeTo.MARGIN,
+    leader: PositionalTabLeader.NONE,
+  });
+}
 
 function textParagraphs(text: string | null | undefined) {
   if (!text) return [];
@@ -31,11 +42,9 @@ function textParagraphs(text: string | null | undefined) {
       (p) =>
         new Paragraph({
           spacing: { after: 160 },
-          children: p.split("\n").flatMap((line, i) =>
-            i === 0
-              ? [new TextRun(line)]
-              : [new TextRun({ text: line, break: 1 })]
-          ),
+          children: p
+            .split("\n")
+            .flatMap((line, i) => (i === 0 ? [new TextRun(line)] : [new TextRun({ text: line, break: 1 })])),
         })
     );
 }
@@ -52,170 +61,104 @@ function bulletParagraphs(lines: string[] | undefined) {
   );
 }
 
-function itemImageRow(item: RenderItem): TableRow | null {
-  if (!item.photos.length) return null;
-  const maxW = Math.min(160, Math.floor(CONTENT_WIDTH_DXA / 20 / item.photos.length));
-  const images = item.photos.map((photo) => {
-    const { width, height } = scaledDimensions(photo.data, maxW, 120);
-    return new ImageRun({
-      data: photo.data,
-      type: docxImageType(photo.contentType),
-      transformation: { width, height },
-    });
-  });
-  return new TableRow({
-    children: [
-      new TableCell({
-        columnSpan: 4,
-        margins: { top: 80, bottom: 160, left: 100, right: 100 },
-        borders: NO_BORDERS,
-        children: [
-          new Paragraph({
-            children: images.flatMap((img, i) => (i === 0 ? [img] : [new TextRun({ text: "  " }), img])),
-          }),
-        ],
-      }),
-    ],
-  });
-}
+/**
+ * One item, flowing top to bottom like an editorial layout rather than a
+ * spreadsheet row: name and total share a line (tabbed apart, no cell
+ * borders), quantity/unit price sit underneath in muted small type, then
+ * the description, then photos — larger and free to wrap onto their own
+ * lines instead of being squeezed into a fixed-width cell.
+ */
+function buildItemBlock(item: RenderItem, isLast: boolean): Paragraph[] {
+  const total = item.quantity * item.unitPrice;
+  const paragraphs: Paragraph[] = [];
 
-const NO_BORDERS = {
-  top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-  bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-  left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-  right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" },
-};
-
-const CELL_BORDERS = {
-  top: { style: BorderStyle.SINGLE, size: 4, color: "D9DEE6" },
-  bottom: { style: BorderStyle.SINGLE, size: 4, color: "D9DEE6" },
-  left: { style: BorderStyle.SINGLE, size: 4, color: "D9DEE6" },
-  right: { style: BorderStyle.SINGLE, size: 4, color: "D9DEE6" },
-};
-
-function headerCell(text: string, width: number) {
-  return new TableCell({
-    width: { size: width, type: WidthType.DXA },
-    shading: { type: ShadingType.CLEAR, fill: "1E3A8A", color: "auto" },
-    borders: CELL_BORDERS,
-    margins: { top: 80, bottom: 80, left: 100, right: 100 },
-    children: [
-      new Paragraph({
-        children: [new TextRun({ text, bold: true, color: "FFFFFF", size: 20 })],
-      }),
-    ],
-  });
-}
-
-function bodyCell(
-  paragraphRuns: TextRun[][],
-  width: number,
-  alignment: (typeof AlignmentType)[keyof typeof AlignmentType] = AlignmentType.LEFT
-) {
-  return new TableCell({
-    width: { size: width, type: WidthType.DXA },
-    borders: CELL_BORDERS,
-    margins: { top: 100, bottom: 100, left: 100, right: 100 },
-    verticalAlign: "center",
-    children: paragraphRuns.map((runs) => new Paragraph({ alignment, children: runs })),
-  });
-}
-
-function buildItemsTable(input: RenderQuoteInput) {
-  const colWidths = [
-    Math.round(CONTENT_WIDTH_DXA * 0.42),
-    Math.round(CONTENT_WIDTH_DXA * 0.13),
-    Math.round(CONTENT_WIDTH_DXA * 0.2),
-    Math.round(CONTENT_WIDTH_DXA * 0.25),
-  ];
-
-  const headerRow = new TableRow({
-    tableHeader: true,
-    children: [
-      headerCell("Ítem", colWidths[0]),
-      headerCell("Cant.", colWidths[1]),
-      headerCell("Precio unitario", colWidths[2]),
-      headerCell("Total", colWidths[3]),
-    ],
-  });
-
-  const rows: TableRow[] = [headerRow];
-
-  let grandTotal = 0;
-  for (const item of input.items) {
-    const total = item.quantity * item.unitPrice;
-    grandTotal += total;
-
-    const nameParas: TextRun[][] = [[new TextRun({ text: item.name, bold: true })]];
-    if (item.description) {
-      for (const line of item.description.split("\n").filter(Boolean).slice(0, 6)) {
-        nameParas.push([new TextRun({ text: line, size: 18, color: "555555" })]);
-      }
-    }
-
-    rows.push(
-      new TableRow({
-        children: [
-          bodyCell(nameParas, colWidths[0]),
-          bodyCell([[new TextRun(String(item.quantity))]], colWidths[1], AlignmentType.CENTER),
-          bodyCell(
-            [[new TextRun(formatMoney(item.unitPrice, item.currency))]],
-            colWidths[2],
-            AlignmentType.RIGHT
-          ),
-          bodyCell(
-            [[new TextRun({ text: formatMoney(total, item.currency), bold: true })]],
-            colWidths[3],
-            AlignmentType.RIGHT
-          ),
-        ],
-      })
-    );
-
-    const imgRow = itemImageRow(item);
-    if (imgRow) rows.push(imgRow);
-  }
-
-  rows.push(
-    new TableRow({
+  paragraphs.push(
+    new Paragraph({
+      spacing: { before: 260, after: 40 },
       children: [
-        new TableCell({
-          columnSpan: 3,
-          borders: NO_BORDERS,
-          margins: { top: 120, right: 100 },
-          children: [
-            new Paragraph({
-              alignment: AlignmentType.RIGHT,
-              children: [new TextRun({ text: "TOTAL", bold: true })],
-            }),
-          ],
-        }),
-        new TableCell({
-          borders: CELL_BORDERS,
-          shading: { type: ShadingType.CLEAR, fill: "EFF6FF", color: "auto" },
-          margins: { top: 120, bottom: 120, left: 100, right: 100 },
-          children: [
-            new Paragraph({
-              alignment: AlignmentType.RIGHT,
-              children: [
-                new TextRun({ text: formatMoney(grandTotal, input.currency), bold: true, size: 24 }),
-              ],
-            }),
-          ],
+        new TextRun({ text: item.name, bold: true, size: 26 }),
+        rightTab(),
+        new TextRun({ text: formatMoney(total, item.currency), bold: true, size: 26, color: BRAND_COLOR }),
+      ],
+    })
+  );
+
+  paragraphs.push(
+    new Paragraph({
+      spacing: { after: 120 },
+      children: [
+        new TextRun({
+          text: `Cantidad: ${item.quantity}   ·   Precio unitario: ${formatMoney(item.unitPrice, item.currency)}`,
+          size: 18,
+          color: MUTED_COLOR,
         }),
       ],
     })
   );
 
-  return new Table({
-    width: { size: CONTENT_WIDTH_DXA, type: WidthType.DXA },
-    columnWidths: colWidths,
-    rows,
+  if (item.description) {
+    for (const line of item.description.split("\n").filter(Boolean)) {
+      paragraphs.push(
+        new Paragraph({
+          spacing: { after: 60 },
+          children: [new TextRun({ text: line, size: 20, color: "374151" })],
+        })
+      );
+    }
+  }
+
+  if (item.photos.length) {
+    const maxW = item.photos.length === 1 ? 420 : 280;
+    const runs = item.photos.flatMap((photo, i) => {
+      const { width, height } = scaledDimensions(photo.data, maxW, 300);
+      const image = new ImageRun({
+        data: photo.data,
+        type: docxImageType(photo.contentType),
+        transformation: { width, height },
+      });
+      return i === 0 ? [image] : [new TextRun({ text: "   " }), image];
+    });
+    paragraphs.push(new Paragraph({ spacing: { before: 100, after: 40 }, children: runs }));
+  }
+
+  if (!isLast) {
+    paragraphs.push(
+      new Paragraph({
+        spacing: { before: 160, after: 0 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: RULE_COLOR, space: 1 } },
+        children: [],
+      })
+    );
+  }
+
+  return paragraphs;
+}
+
+function buildItemsFlow(input: RenderQuoteInput): Paragraph[] {
+  const paragraphs: Paragraph[] = [];
+  let grandTotal = 0;
+  input.items.forEach((item, i) => {
+    grandTotal += item.quantity * item.unitPrice;
+    paragraphs.push(...buildItemBlock(item, i === input.items.length - 1));
   });
+
+  paragraphs.push(
+    new Paragraph({
+      spacing: { before: 320 },
+      border: { top: { style: BorderStyle.SINGLE, size: 12, color: BRAND_COLOR, space: 4 } },
+      children: [
+        new TextRun({ text: "TOTAL", bold: true, size: 22, color: MUTED_COLOR }),
+        rightTab(),
+        new TextRun({ text: formatMoney(grandTotal, input.currency), bold: true, size: 32, color: BRAND_COLOR }),
+      ],
+    })
+  );
+
+  return paragraphs;
 }
 
 async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
-  const children: (Paragraph | Table)[] = [];
+  const children: Paragraph[] = [];
 
   if (input.logo) {
     const { width, height } = scaledDimensions(input.logo.data, 160, 90);
@@ -238,6 +181,14 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
         heading: HeadingLevel.HEADING_1,
         spacing: { before: 200, after: 200 },
         children: [new TextRun({ text: input.title, bold: true, size: 30 })],
+      })
+    );
+  }
+  if (input.subtitle) {
+    children.push(
+      new Paragraph({
+        spacing: { after: 200 },
+        children: [new TextRun({ text: input.subtitle, size: 22, color: MUTED_COLOR })],
       })
     );
   }
@@ -280,20 +231,22 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
 
   children.push(
     new Paragraph({
-      spacing: { before: 200, after: 160 },
-      children: [new TextRun({ text: "COTIZACIÓN", bold: true, size: 24 })],
+      spacing: { before: 200, after: 40 },
+      children: [new TextRun({ text: "COTIZACIÓN", bold: true, size: 24, color: BRAND_COLOR })],
     })
   );
-  children.push(buildItemsTable(input));
+  children.push(...buildItemsFlow(input));
 
   if (input.termsText?.length) {
     children.push(
       new Paragraph({
-        spacing: { before: 300, after: 120 },
+        spacing: { before: 400, after: 120 },
         children: [new TextRun({ text: "PLAZOS", bold: true, size: 22 })],
       })
     );
-    children.push(...input.termsText.map((t) => new Paragraph({ spacing: { after: 100 }, children: [new TextRun(t)] })));
+    children.push(
+      ...input.termsText.map((t) => new Paragraph({ spacing: { after: 100 }, children: [new TextRun(t)] }))
+    );
   }
 
   if (input.considerationsText?.length) {
@@ -328,7 +281,9 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
       })
     );
   } else {
-    children.push(new Paragraph({ spacing: { before: 200 }, children: [new TextRun("_________________________")] }));
+    children.push(
+      new Paragraph({ spacing: { before: 200 }, children: [new TextRun("_________________________")] })
+    );
   }
   if (input.signatoryName) {
     children.push(new Paragraph({ children: [new TextRun({ text: input.signatoryName, bold: true })] }));
