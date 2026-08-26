@@ -10,6 +10,20 @@ export const BUCKETS = {
   generatedQuotes: "generated-quotes",
 } as const;
 
+/**
+ * Storage keys reject spaces, accents and other non-ASCII characters.
+ * Uploaded files keep their real name in the database for display — this
+ * is only for the key we hand to Storage.
+ */
+export function sanitizeStorageFilename(name: string): string {
+  const normalized = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // strip accents
+    .replace(/[^a-zA-Z0-9.\-_]/g, "_") // anything else -> underscore
+    .replace(/_+/g, "_");
+  return normalized || "archivo";
+}
+
 export function publicUrl(bucket: string, path: string | null | undefined): string | null {
   if (!path) return null;
   const sb = supabaseServer();

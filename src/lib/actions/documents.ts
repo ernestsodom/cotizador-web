@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { supabaseServer } from "@/lib/supabase/server";
-import { BUCKETS } from "@/lib/supabase/storage";
+import { BUCKETS, sanitizeStorageFilename } from "@/lib/supabase/storage";
 import { getDocumentParser } from "@/lib/document-parsers/registry";
 
 const DOCUMENT_TYPE_KEY = "carta_cotizacion_v1";
@@ -29,7 +29,7 @@ export async function uploadAndParseDocument(formData: FormData): Promise<void> 
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const storagePath = `${randomUUID()}-${file.name}`;
+  const storagePath = `${randomUUID()}-${sanitizeStorageFilename(file.name)}`;
 
   const { error: uploadErr } = await sb.storage
     .from(BUCKETS.sourceDocuments)
