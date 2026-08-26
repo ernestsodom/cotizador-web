@@ -122,6 +122,15 @@ create table quote_items (
   updated_at timestamptz not null default now()
 );
 
+-- App-level settings. The access password lives here (PBKDF2-hashed) rather
+-- than in an environment variable, so it can be changed from the app without
+-- a redeploy.
+create table app_settings (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+
 create table quote_item_photos (
   id uuid primary key default gen_random_uuid(),
   quote_item_id uuid not null references quote_items(id) on delete cascade,
@@ -157,6 +166,8 @@ create trigger trg_quotes_updated_at before update on quotes
   for each row execute function set_updated_at();
 create trigger trg_quote_items_updated_at before update on quote_items
   for each row execute function set_updated_at();
+create trigger trg_app_settings_updated_at before update on app_settings
+  for each row execute function set_updated_at();
 
 alter table document_types enable row level security;
 alter table quote_formats enable row level security;
@@ -169,6 +180,7 @@ alter table signatories enable row level security;
 alter table quotes enable row level security;
 alter table quote_items enable row level security;
 alter table quote_item_photos enable row level security;
+alter table app_settings enable row level security;
 
 -- v1: no Supabase Auth users yet. The Next.js app is gated by a shared
 -- app-level password (middleware), and talks to Postgres using the anon
@@ -182,7 +194,7 @@ begin
   for t in select unnest(array[
     'document_types','quote_formats','source_documents','source_document_images',
     'source_document_items','source_document_item_images','logos','signatories',
-    'quotes','quote_items','quote_item_photos'
+    'quotes','quote_items','quote_item_photos','app_settings'
   ])
   loop
     execute format('create policy "anon_full_access" on %I for all to anon using (true) with check (true);', t);

@@ -4,6 +4,7 @@ const NAV_ITEMS = [
   { href: "/documents", label: "Documentos" },
   { href: "/logos", label: "Logos" },
   { href: "/signatories", label: "Firmantes" },
+  { href: "/settings", label: "Configuración" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

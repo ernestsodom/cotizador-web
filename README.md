@@ -83,7 +83,13 @@ esquema completo, por si hay que recrearlo).
 ### Nota de seguridad (v1)
 
 Todavía no hay sistema de usuarios. La app completa está protegida por una
-sola contraseña compartida (`APP_PASSWORD`, revisada en `src/middleware.ts`).
+sola contraseña compartida, que se cambia desde **Configuración → Cambiar
+contraseña**. Se guarda con hash PBKDF2 en la tabla `app_settings`, no en una
+variable de entorno, así que cambiarla no requiere redesplegar. `APP_PASSWORD`
+solo se usa para el primer acceso, mientras no haya ninguna guardada.
+
+Como la cookie de sesión se deriva del hash almacenado, cambiar la contraseña
+cierra todas las sesiones abiertas.
 Las políticas RLS en Supabase dan acceso completo a la clave `anon` porque
 todas las consultas se hacen desde el servidor de Next.js — esa clave nunca
 se expone al navegador. Si más adelante se necesita control de acceso por
