@@ -90,16 +90,26 @@ async function parseSourceDocument(sourceDocumentId: string, buffer: Buffer) {
       );
     }
 
+    // Uploads are the slow part — run them in parallel (same fix as
+    // render.ts's loadPhotos) instead of one at a time, which is what let a
+    // document with several images push this past the function's time
+    // limit and leave the row stuck at status "parsing" forever.
+    const uploads = await Promise.all(
+      parsed.images.map(async (img) => {
+        const ext = img.mediaTarget.split(".").pop()?.toLowerCase() || "png";
+        const path = `${sourceDocumentId}/${img.key}.${ext}`;
+        const { error: upErr } = await sb.storage
+          .from(BUCKETS.documentImages)
+          .upload(path, img.data, { contentType: img.contentType, upsert: true });
+        return upErr ? null : { img, path };
+      })
+    );
+
     const imageIdByKey = new Map<string, string>();
     let imageOrder = 0;
-    for (const img of parsed.images) {
-      const ext = img.mediaTarget.split(".").pop()?.toLowerCase() || "png";
-      const path = `${sourceDocumentId}/${img.key}.${ext}`;
-      const { error: upErr } = await sb.storage
-        .from(BUCKETS.documentImages)
-        .upload(path, img.data, { contentType: img.contentType, upsert: true });
-      if (upErr) continue;
-
+    for (const uploaded of uploads) {
+      if (!uploaded) continue;
+      const { img, path } = uploaded;
       const { data: imgRow } = await sb
         .from("source_document_images")
         .insert({

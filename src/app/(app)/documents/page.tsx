@@ -21,6 +21,7 @@ const STATUS_CLASS: Record<DocumentStatus, string> = {
 };
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const NO_FOLDER_KEY = "__none__";
 
