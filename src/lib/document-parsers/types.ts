@@ -75,3 +75,23 @@ export interface ParsedDocument {
 }
 
 export type DocumentParser = (fileBuffer: Buffer) => Promise<ParsedDocument>;
+
+/**
+ * Human-readable labels for the editable fields whose anchors are missing
+ * from a parsed document — e.g. because its salutation isn't "Señor(a)" or
+ * its title doesn't sit right before the date line, so the parser never
+ * found that spot in the body. In replica format, a field whose anchor is
+ * missing keeps whatever the original document said no matter what the
+ * user types for it, which otherwise just looks like edits aren't saving.
+ */
+export function missingReplicaAnchorLabels(anchors: ParsedAnchors | undefined): string[] {
+  const a = anchors ?? {};
+  const labels: string[] = [];
+  if (a.titleBlock == null && a.subtitleBlock == null) labels.push("Título / bajada de la portada");
+  if (a.recipientNameBlock == null) labels.push("Destinatario (nombre y cargo)");
+  if (a.recipientInstitutionBlock == null) labels.push("Institución destinataria");
+  if (a.letterNumberBlock == null) labels.push("N° de carta");
+  if (a.dateBlock == null) labels.push("Fecha de la carta");
+  if (a.signatureNameBlock == null && a.signaturePositionBlock == null) labels.push("Firma");
+  return labels;
+}

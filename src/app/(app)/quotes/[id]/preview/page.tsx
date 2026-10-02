@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { approveQuote } from "@/lib/actions/quotes";
 import { SubmitButton } from "@/components/SubmitButton";
 import { DocxPreview } from "@/components/quotes/DocxPreview";
+import { ManualOverrideCard } from "@/components/quotes/ManualOverrideCard";
 import { ui } from "@/lib/ui";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export default async function QuotePreviewPage({
 
   const { data: quote } = await sb
     .from("quotes")
-    .select("status, quote_formats(name)")
+    .select("status, manual_override_path, quote_formats(name)")
     .eq("id", id)
     .single();
   if (!quote) notFound();
@@ -53,6 +54,12 @@ export default async function QuotePreviewPage({
           Esta cotización ya fue aprobada. Para editarla, vuelve a borrador desde el paso 5.
         </div>
       )}
+
+      <ManualOverrideCard
+        quoteId={id}
+        draftUrl={`/api/quotes/${id}/draft`}
+        hasOverride={!!quote.manual_override_path}
+      />
 
       <DocxPreview src={`/api/quotes/${id}/draft`} />
 

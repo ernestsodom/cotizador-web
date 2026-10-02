@@ -116,6 +116,10 @@ create table quotes (
   currency text not null default 'UF',
   notes text,
   generated_storage_path text,
+  -- when set, a user-edited .docx (uploaded after editing the generated
+  -- file directly in Word) that the draft preview, approval and final
+  -- download all serve verbatim instead of what render.ts would produce
+  manual_override_path text,
   approved_at timestamptz,
   generated_at timestamptz,
   created_at timestamptz not null default now(),

@@ -8,6 +8,7 @@ import { SubmitButton } from "@/components/SubmitButton";
 import { formatMoney } from "@/lib/format";
 import { ui } from "@/lib/ui";
 import type { QuoteStatus } from "@/lib/supabase/types";
+import { missingReplicaAnchorLabels, type ParsedDocumentMeta } from "@/lib/document-parsers/types";
 
 const QUOTE_STATUS_LABEL: Record<QuoteStatus, string> = {
   draft: "Borrador",
@@ -130,6 +131,24 @@ export default async function DocumentDetailPage({
               </ul>
             </div>
           )}
+
+          {(() => {
+            const meta = (doc.parsed_meta ?? {}) as ParsedDocumentMeta;
+            const missing = missingReplicaAnchorLabels(meta.anchors);
+            if (missing.length === 0) return null;
+            return (
+              <div className={`${ui.card} border-amber-200 bg-amber-50 text-sm text-amber-900`}>
+                <p className="font-semibold">
+                  El formato original no podrá editar algunos campos en las cotizaciones de este
+                  documento
+                </p>
+                <p className="mt-1">
+                  No se encontraron en el texto las marcas para: {missing.join(", ")}. Esos datos
+                  saldrán tal como están en el documento cargado, aunque los edites en el paso Datos.
+                </p>
+              </div>
+            );
+          })()}
 
           <div className={ui.card}>
             <div className="space-y-4">

@@ -7,6 +7,7 @@ import {
   setQuoteFormat,
   uploadCoverImage,
   clearCoverImage,
+  uploadQuoteLogo,
 } from "@/lib/actions/quotes";
 import { createSignatory } from "@/lib/actions/signatories";
 import { createLogo } from "@/lib/actions/logos";
@@ -55,9 +56,12 @@ export function DataForm({
   const [showAddLogo, setShowAddLogo] = useState(false);
   const [, startTransition] = useTransition();
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
   const router = useRouter();
 
   const isReplica = form.formatKey === "reutility_replica_v1";
+  const selectedLogo = logos.find((l) => l.id === form.logoId);
 
   function save(patch: Parameters<typeof updateQuoteData>[1]) {
     startTransition(() => {
@@ -185,8 +189,41 @@ export function DataForm({
             <p className="text-xs text-slate-500">Reemplaza el logo que aparece en la portada.</p>
           </div>
           <button type="button" onClick={() => setShowAddLogo((v) => !v)} className={ui.btnSecondary}>
-            + Agregar logo
+            + Guardar en la galería
           </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4">
+          {(logoPreviewUrl || selectedLogo?.url) && (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={logoPreviewUrl || selectedLogo!.url}
+              alt="Logo"
+              className="h-20 w-32 rounded-lg border border-slate-200 bg-white object-contain p-2"
+            />
+          )}
+          <button type="button" className={ui.btnPrimary} onClick={() => logoInputRef.current?.click()}>
+            Subir logo
+          </button>
+          <input
+            ref={logoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const fd = new FormData();
+              fd.set("file", file);
+              const preview = URL.createObjectURL(file);
+              setLogoPreviewUrl(preview);
+              startTransition(async () => {
+                await uploadQuoteLogo(quote.id, fd);
+                router.refresh();
+              });
+              e.target.value = "";
+            }}
+          />
         </div>
 
         {showAddLogo && (
@@ -209,6 +246,7 @@ export function DataForm({
               onClick={() => {
                 const next = form.logoId === logo.id ? null : logo.id;
                 setForm((f) => ({ ...f, logoId: next }));
+                setLogoPreviewUrl(null);
                 save({ logoId: next });
               }}
               className={`flex h-20 w-32 items-center justify-center rounded-lg border-2 bg-white p-2 ${
@@ -222,7 +260,8 @@ export function DataForm({
           ))}
           {!logos.length && !showAddLogo && (
             <p className="text-sm text-slate-500">
-              Sin logos guardados. Si no eliges uno, se mantiene el del documento original.
+              Sin logos guardados todavía — sube uno arriba, o si no eliges ninguno se mantiene el del
+              documento original.
             </p>
           )}
         </div>

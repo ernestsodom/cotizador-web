@@ -333,6 +333,43 @@ export async function clearCoverImage(quoteId: string): Promise<void> {
   revalidateQuote(quoteId);
 }
 
+/**
+ * Uploads a logo and sets it on this quote in one step — the same
+ * single-click pattern as the cover image, rather than the separate
+ * "register a named logo, then pick it" flow the logo library also
+ * offers. That two-step flow doesn't match what "subir logo" implies
+ * here, which read as the upload simply not working.
+ */
+export async function uploadQuoteLogo(quoteId: string, formData: FormData): Promise<void> {
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    throw new Error("Selecciona una imagen para el logo.");
+  }
+  const sb = supabaseServer();
+  const { data: quote } = await sb
+    .from("quotes")
+    .select("client_name")
+    .eq("id", quoteId)
+    .single();
+
+  const ext = file.name.split(".").pop() || "png";
+  const path = `${randomUUID()}.${ext}`;
+  const buffer = Buffer.from(await file.arrayBuffer());
+  await uploadFile(BUCKETS.logos, path, buffer, file.type || "image/png");
+
+  const name = (quote?.client_name as string | null) || `Logo ${new Date().toLocaleDateString("es-CL")}`;
+  const { data: logo, error } = await sb
+    .from("logos")
+    .insert({ name, storage_path: path })
+    .select("id")
+    .single();
+  if (error || !logo) throw new Error("No se pudo guardar el logo.");
+
+  await sb.from("quotes").update({ logo_id: logo.id }).eq("id", quoteId);
+  revalidateQuote(quoteId);
+  revalidatePath("/logos");
+}
+
 export async function approveQuote(quoteId: string): Promise<void> {
   const sb = supabaseServer();
   await sb
@@ -355,7 +392,7 @@ export async function generateQuote(quoteId: string): Promise<void> {
 
   const { data: quote } = await sb
     .from("quotes")
-    .select("status")
+    .select("status, manual_override_path")
     .eq("id", quoteId)
     .single();
   if (!quote) throw new Error("Cotización no encontrada.");
@@ -363,15 +400,21 @@ export async function generateQuote(quoteId: string): Promise<void> {
     throw new Error("La cotización debe aprobarse antes de generarla.");
   }
 
-  const buffer = await renderQuoteDocx(quoteId);
-
-  const path = `${quoteId}/${randomUUID()}.docx`;
-  await uploadFile(
-    BUCKETS.generatedQuotes,
-    path,
-    buffer,
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  );
+  // a manually-edited .docx takes over entirely — it's already sitting in
+  // generated-quotes, so there's nothing to render or re-upload
+  const path = quote.manual_override_path
+    ? (quote.manual_override_path as string)
+    : await (async () => {
+        const buffer = await renderQuoteDocx(quoteId);
+        const p = `${quoteId}/${randomUUID()}.docx`;
+        await uploadFile(
+          BUCKETS.generatedQuotes,
+          p,
+          buffer,
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        return p;
+      })();
 
   await sb
     .from("quotes")
@@ -382,5 +425,40 @@ export async function generateQuote(quoteId: string): Promise<void> {
     })
     .eq("id", quoteId);
 
+  revalidateQuote(quoteId);
+}
+
+/**
+ * Lets the user take over entirely: download the current borrador, edit it
+ * directly in Word, and upload the result back as the quote's content from
+ * here on — the draft preview, approval and final document all serve this
+ * file verbatim instead of what render.ts would produce.
+ */
+export async function uploadManualOverride(quoteId: string, formData: FormData): Promise<void> {
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    throw new Error("Selecciona el archivo .docx editado.");
+  }
+  if (!/\.docx$/i.test(file.name)) {
+    throw new Error("Solo se admiten archivos .docx (Word).");
+  }
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const path = `${quoteId}/manual-${randomUUID()}.docx`;
+  await uploadFile(
+    BUCKETS.generatedQuotes,
+    path,
+    buffer,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  );
+
+  const sb = supabaseServer();
+  await sb.from("quotes").update({ manual_override_path: path }).eq("id", quoteId);
+  revalidateQuote(quoteId);
+}
+
+/** Reverts to the system-generated document, discarding the manual edit. */
+export async function clearManualOverride(quoteId: string): Promise<void> {
+  const sb = supabaseServer();
+  await sb.from("quotes").update({ manual_override_path: null }).eq("id", quoteId);
   revalidateQuote(quoteId);
 }

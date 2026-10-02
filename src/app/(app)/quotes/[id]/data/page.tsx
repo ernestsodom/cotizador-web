@@ -5,6 +5,7 @@ import { publicUrl, BUCKETS } from "@/lib/supabase/storage";
 import { DataForm } from "@/components/quotes/DataForm";
 import { ui } from "@/lib/ui";
 import type { ParsedDocumentMeta } from "@/lib/document-parsers/types";
+import { missingReplicaAnchorLabels } from "@/lib/document-parsers/types";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,7 @@ export default async function QuoteDataPage({
 
   // the cover art that the source document already carries, as a fallback preview
   let defaultCoverUrl: string | null = null;
+  let missingAnchorLabels: string[] = [];
   if (quote.source_document_id) {
     const { data: sourceDoc } = await sb
       .from("source_documents")
@@ -49,6 +51,7 @@ export default async function QuoteDataPage({
         .maybeSingle();
       if (img) defaultCoverUrl = publicUrl(BUCKETS.documentImages, img.storage_path as string);
     }
+    missingAnchorLabels = missingReplicaAnchorLabels(meta.anchors);
   }
 
   const formatKey =
@@ -60,6 +63,27 @@ export default async function QuoteDataPage({
         Completa los datos que aparecerán en la cotización. Se guardan automáticamente al salir de
         cada campo.
       </p>
+
+      {formatKey === "reutility_replica_v1" && missingAnchorLabels.length > 0 && (
+        <div className={`${ui.card} border-amber-200 bg-amber-50 text-sm text-amber-900`}>
+          <p className="font-semibold">El documento original no tiene marcas para algunos campos</p>
+          <p className="mt-1">
+            Al analizar el documento cargado, el sistema no pudo ubicar dónde van estos datos dentro
+            del texto (por ejemplo, si el saludo no dice exactamente &ldquo;Señor(a)&rdquo;, o el
+            título no está justo antes de la fecha). Lo que edites en estos campos{" "}
+            <strong>no se reflejará</strong> en el documento final — se mantendrá el texto original:
+          </p>
+          <ul className="mt-2 list-disc pl-5">
+            {missingAnchorLabels.map((label) => (
+              <li key={label}>{label}</li>
+            ))}
+          </ul>
+          <p className="mt-2">
+            Para solucionarlo, revisa que el documento original siga esa estructura y vuelve a
+            cargarlo, o usa el formato <strong>Moderno</strong> para esta cotización.
+          </p>
+        </div>
+      )}
 
       <DataForm
         quote={{
