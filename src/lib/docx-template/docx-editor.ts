@@ -237,6 +237,48 @@ export class DocxEditor {
     this.splices.push({ start: afterRow.end, end: afterRow.end, text: newRow });
   }
 
+  /**
+   * Clones a plain paragraph once per line of `lines`, each carrying its own
+   * line of text in the template paragraph's own formatting, and inserts
+   * the whole run after `afterEl` in one splice. Used to give a hand-added
+   * item (one with no section of its own in the template) a real
+   * description in the body, the same way the template's own items have
+   * one, instead of leaving it as a price-table row with nowhere for its
+   * text to go. Call this once with every line for every such item — two
+   * separate calls anchored at the same element would each splice in at
+   * the same offset, and the one applied second would land first.
+   */
+  insertParagraphsAfter(afterEl: XmlElement, templateParagraph: XmlElement, lines: string[]): void {
+    if (lines.length === 0) return;
+    const paraXml = this.xml.slice(templateParagraph.start, templateParagraph.end);
+    const blocks = lines.map((line) => {
+      const sub = indexXml(paraXml);
+      const p = sub.children.find((c) => c.name === "w:p");
+      if (!p) return "";
+      const subSplices: Splice[] = [];
+      const ts = findAll(p, "w:t");
+      ts.forEach((t, i) => {
+        const v = i === 0 ? line : "";
+        if (t.selfClosing) {
+          subSplices.push({
+            start: t.start,
+            end: t.end,
+            text: `<w:t xml:space="preserve">${escapeXml(v)}</w:t>`,
+          });
+        } else {
+          const openTag = paraXml.slice(t.start, t.innerStart);
+          const withSpace = openTag.includes("xml:space")
+            ? openTag
+            : openTag.replace(/^<w:t/, '<w:t xml:space="preserve"');
+          subSplices.push({ start: t.start, end: t.innerStart, text: withSpace });
+          subSplices.push({ start: t.innerStart, end: t.innerEnd, text: escapeXml(v) });
+        }
+      });
+      return applySplices(paraXml, subSplices);
+    });
+    this.splices.push({ start: afterEl.end, end: afterEl.end, text: blocks.join("") });
+  }
+
   /** Replaces the bytes of an existing media part, keeping its name and every reference to it. */
   replaceMedia(target: string, data: Buffer): void {
     this.mediaWrites.set(`word/${target.replace(/^\/+/, "")}`, data);

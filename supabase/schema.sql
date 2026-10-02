@@ -101,6 +101,10 @@ create table quotes (
   subtitle text,
   cover_image_path text,
   remove_excluded_sections boolean not null default true,
+  -- extra [oldText, newText] pairs beyond the standard client/institution/
+  -- recipient renames, for wording the template's own boilerplate doesn't
+  -- cover (e.g. a product description that doesn't fit this quote's items)
+  custom_text_replacements jsonb not null default '[]'::jsonb,
   client_name text,
   recipient_name text,
   recipient_position text,

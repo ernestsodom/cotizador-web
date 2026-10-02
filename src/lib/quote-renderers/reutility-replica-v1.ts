@@ -161,11 +161,16 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
       if (row) ed.remove(row);
     }
 
-    // items the user added by hand: clone the styling of an existing row
+    // items the user added by hand: clone the styling of an existing row.
+    // All of them anchor after the same lastKeptRow (it isn't — can't be —
+    // advanced to "the row just cloned", since cloneRowAfter doesn't hand
+    // one back), which means every clone is a separate splice at that same
+    // offset; applySplices resolves same-offset splices last-pushed-first,
+    // so pushing in reverse is what makes the visible order come out right.
     const added = input.items.filter((i) => i.tableRowIndex == null);
     const source = templateRow ?? rows[1] ?? null;
     if (source && lastKeptRow) {
-      for (const item of added) {
+      for (const item of [...added].reverse()) {
         const cellCount = ed.cells(source).length;
         const texts = new Array(cellCount).fill("");
         texts[0] = nameCellText(item);
@@ -188,6 +193,31 @@ async function generateDocx(input: RenderQuoteInput): Promise<Buffer> {
       if (from && to && (item.sectionEndBlock ?? 0) >= (item.sectionStartBlock ?? 0)) {
         ed.removeRange(from, to);
       }
+    }
+  }
+
+  // ---- descriptions for hand-added items ----
+  // A hand-added item has no section of its own in the template, so its
+  // description would otherwise only ever reach the price-table row (name
+  // and total, no body text). Give it one: clone a plain paragraph from an
+  // existing section — any one will do, it's only donating formatting, and
+  // this document always has at least one once it has a pricing table at
+  // all — once per line of the item's description, inserted right after
+  // the table. All of it goes in as a single call: two calls anchored at
+  // the same block would each splice in at that same offset, and whichever
+  // ran second would end up first.
+  const describable = input.items.filter((i) => i.sectionStartBlock == null && i.description);
+  if (tbl && describable.length > 0) {
+    const donor =
+      at(input.excludedItems?.find((i) => i.sectionStartBlock != null)?.sectionStartBlock) ??
+      at(input.items.find((i) => i.sectionStartBlock != null)?.sectionStartBlock);
+    if (donor) {
+      const lines = describable.flatMap((item) => [
+        item.name,
+        ...(item.description ?? "").split("\n"),
+        "",
+      ]);
+      ed.insertParagraphsAfter(tbl, donor, lines);
     }
   }
 

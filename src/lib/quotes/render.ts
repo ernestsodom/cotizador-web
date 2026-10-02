@@ -47,7 +47,10 @@ async function loadOne(
  * carry a rename through every place that text appears, not just its own
  * field: change "Municipalidad de Melipilla" to "Proexsi" once, and it
  * updates the intro paragraph, the considerations, any section that
- * mentions it too.
+ * mentions it too. `quote.custom_text_replacements` adds any further
+ * [oldText, newText] pairs the quote itself carries — for wording the
+ * standard field renames don't cover, like a product description in the
+ * template's own boilerplate that doesn't apply to this quote's items.
  */
 function textReplacementPairs(
   sourceMeta: ParsedDocumentMeta,
@@ -62,6 +65,14 @@ function textReplacementPairs(
   add(sourceMeta.recipientInstitution, quote.recipient_institution);
   add(sourceMeta.clientNameGuess, quote.client_name);
   add(sourceMeta.recipientName, quote.recipient_name);
+  const custom = quote.custom_text_replacements;
+  if (Array.isArray(custom)) {
+    for (const pair of custom) {
+      if (Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "string") {
+        add(pair[0], pair[1]);
+      }
+    }
+  }
   return pairs;
 }
 
